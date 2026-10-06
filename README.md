@@ -3,7 +3,7 @@
 A free, browser-only chess game reviewer for your [chess.com](https://www.chess.com) games.
 Enter your username, load your games, and let Stockfish show you what went wrong.
 
-- **Game review**: every move rated best / excellent / good / inaccuracy / mistake / blunder, accuracy %, eval graph, and a short explanation of hung pieces, missed captures and missed mates.
+- **Game review (Stockfish 18)**: every move labelled like chess.com's Game Review: Brilliant, Great, Best, Excellent, Good, Theory (opening book), Inaccuracy, Miss, Mistake, Blunder. Accuracy %, eval graph, a summary table per player, the engine's best line, hung pieces / missed captures / missed mates, and where you left opening theory (with the theory moves).
 - **Openings explorer**: click through the lines you actually play, with your win/draw/loss score.
 - **Insights**: your weakest phase of the game, recurring opening mistakes, openings that cost you the most.
 - **Train your mistakes**: puzzles built from your own blunders, with spaced repetition (a position you solve returns after 1, 3, 7, 21, 60 days; one you miss returns soon).
@@ -35,3 +35,6 @@ username's games and their engine analysis (one JSON file per user, no accounts,
 loads fast and analysis done once is shared. It also fetches from chess.com server-side. Without it the page
 falls back to asking chess.com directly. See `deploy/` for a hardened systemd unit and the nginx snippet.
 Only public data is stored; imported PGNs and training progress stay in the visitor's browser.
+
+Opening theory comes from [lichess chess-openings](https://github.com/lichess-org/chess-openings) (CC0); regenerate
+`book.json` with `node tools/build-book.js`.

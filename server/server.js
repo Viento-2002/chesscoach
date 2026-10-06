@@ -89,6 +89,7 @@ async function doSync(name, months) {
 
 /* ---------- analysis validation ---------- */
 const UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
+const PV_RE = /^[a-h][1-8][a-h][1-8][qrbn]?( [a-h][1-8][a-h][1-8][qrbn]?){0,7}$/;
 function validAnalysis(game, p) {
   if (!Array.isArray(p)) return 'p must be an array';
   const c = new Chess();
@@ -103,6 +104,12 @@ function validAnalysis(game, p) {
     const okCp = Number.isInteger(e.c) && Math.abs(e.c) <= 10000 && e.m == null;
     const okMate = e.c == null && Number.isInteger(e.m) && Math.abs(e.m) <= 300;
     if (!okCp && !okMate) return 'bad evaluation';
+    // optional: evaluation of the second-best line, and the engine's best line (up to 8 moves)
+    if (e.c2 != null || e.m2 != null) {
+      const ok2 = (Number.isInteger(e.c2) && Math.abs(e.c2) <= 10000 && e.m2 == null) || (e.c2 == null && Number.isInteger(e.m2) && Math.abs(e.m2) <= 300);
+      if (!ok2) return 'bad second evaluation';
+    }
+    if (e.v != null && (typeof e.v !== 'string' || !PV_RE.test(e.v))) return 'bad line';
     if (e.b != null) {
       if (typeof e.b !== 'string' || !UCI_RE.test(e.b)) return 'bad move';
       if (!new Chess(fens[k]).move({ from: e.b.slice(0, 2), to: e.b.slice(2, 4), promotion: e.b[4] })) return 'illegal best move';
@@ -190,7 +197,15 @@ async function handle(req, res) {
     if (d.an[g.url] && d.an[g.url].depth >= depth) return send(res, 200, { accepted: false, reason: 'already have equal or deeper analysis' });
     const bad = validAnalysis(g, body.p);
     if (bad) return send(res, 400, { error: 'rejected: ' + bad });
-    d.an[g.url] = { depth, p: body.p.map(e => ({ c: e.c == null ? null : e.c, m: e.m == null ? null : e.m, b: e.b || null })), seq: ++d.seq };
+    d.an[g.url] = {
+      depth, seq: ++d.seq,
+      p: body.p.map(e => {
+        const o = { c: e.c == null ? null : e.c, m: e.m == null ? null : e.m, b: e.b || null };
+        if (e.c2 != null || e.m2 != null) { o.c2 = e.c2 == null ? null : e.c2; o.m2 = e.m2 == null ? null : e.m2; }
+        if (e.v) o.v = e.v;
+        return o;
+      })
+    };
     persist(d);
     return send(res, 200, { accepted: true });
   }
