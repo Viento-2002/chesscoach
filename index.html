@@ -15,6 +15,8 @@ header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px var(
 header h1{font-size:20px;margin:0 12px 0 0}
 input,select,button,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 11px;min-height:38px}
 input,select,textarea{font-size:16px} /* 16px stops iOS zooming into fields */
+:root{color-scheme:dark}
+select{-webkit-appearance:none;appearance:none;background:var(--panel2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%239a9792' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 11px center;padding-right:30px}
 textarea{width:100%;min-height:110px;font:13px/1.4 ui-monospace,Consolas,monospace}
 button{cursor:pointer}button:hover{background:#3b3935}
 button.primary{background:var(--accent);color:#10200a;border-color:var(--accent);font-weight:600}
@@ -226,9 +228,10 @@ const MAX_ANALYSE=100; // bulk analysis only covers the newest games; older ones
 const recent=()=>S.games.slice(0,MAX_ANALYSE);
 
 /* ---------- load saved data, then sync with chess.com ---------- */
-async function loadUser(name,sync){
+async function loadUser(name,sync,manual){
   name=name.trim();if(!name)return;
   S.user=name;S.games=[];S.stored=[];S.byUrl=new Map();S.meta={synced:[]};S.train={};S.sel=null;S.tr=null;
+  S.server=false;S.srv=null;S.serverWhy='';S.showLocal=false;S.checked=0;clearTimeout(pollTimer);
   const pending=[];
   ls.set('cc:user',name);ls.set('cc:months',$('#months').value);$('#user').value=name;
   try{
@@ -242,7 +245,7 @@ async function loadUser(name,sync){
   setStatus(S.games.length?`${S.games.length} saved games`:'');
   render();
   if(pending.length){await prepareAll(pending);setStatus(`${S.games.length} saved games`);render()}
-  if(sync&&!(await syncFromServer()))await syncGames(); // our server first; chess.com directly if it is unreachable
+  if(sync&&!(await syncFromServer(false,manual)))await syncGames(); // our server first; chess.com directly if it is unreachable
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
 const REV_V=3;
@@ -269,46 +272,57 @@ async function prepareAll(items){ // in small chunks so the page stays responsiv
 const isChessCom=u=>/^https:\/\/www\.chess\.com\/game\//.test(u);
 const apiUrl=(what,name)=>`api/${what}/${encodeURIComponent(name.toLowerCase())}`;
 // ChessCoach's own server keeps each player's public games and shared engine analysis, so loading is fast.
-async function syncFromServer(){
+// Stockfish on the server analyses each player's newest games in the background; the page shows
+// the progress and picks up finished reviews automatically (see pollServer).
+async function syncFromServer(poll,manual){
   const user=S.user;
-  setStatus('Loading games…');
+  if(!poll)setStatus(manual?'Checking chess.com for new games…':'Loading games…');
   let r,j;
   try{
-    r=await fetch(`${apiUrl('profile',user)}?months=${$('#months').value}&since=${S.meta.since||0}`);
-    try{j=JSON.parse(await r.text())}catch(e){return false} // not our API (e.g. a plain file server)
-  }catch(e){return false}
+    r=await fetch(`${apiUrl('profile',user)}?months=${$('#months').value}&since=${S.meta.since||0}${manual?'&refresh=1':''}`,{cache:'no-store'});
+    const txt=await r.text();
+    try{j=JSON.parse(txt)}catch(e){S.serverWhy=`HTTP ${r.status}, not our API`;return false} // e.g. a plain file server
+  }catch(e){S.serverWhy=e.message||'no connection';return false}
   if(S.user!==user)return true;
   if(!r.ok){
     if(r.status===404&&j.error&&/not found/.test(j.error)){setStatus(`⚠ chess.com user "${user}" not found`);return true}
+    S.serverWhy=`HTTP ${r.status} ${j.error||''}`;
     return false; // server trouble or rate limit: ask chess.com directly instead
   }
-  S.server=true;
+  S.server=true;S.serverWhy='';S.srv=j.progress;S.checked=j.checked;
   let added=0;
   for(const raw of j.games)try{if(ingest(raw,true))added++}catch(e){}
-  const shared=[];
-  for(const [url,a] of Object.entries(j.analyses||{})){const g=S.byUrl.get(url);if(g&&!g.p)shared.push([g,a])}
-  sortGames();setStatus(`${S.games.length} games`);try{render()}catch(e){}
-  if(shared.length)await prepareAll(shared);
-  const got=shared.filter(([g])=>g.rev).length;
+  const fresh=[];
+  for(const [url,a] of Object.entries(j.analyses||{})){const g=S.byUrl.get(url);if(g&&!g.p)fresh.push([g,a])}
+  sortGames();
+  if(fresh.length)await prepareAll(fresh);
   S.meta.since=j.seq;
   save(K('games'),S.stored);save(K('meta'),S.meta);
-  const n=S.games.filter(g=>g.rev).length;
-  setStatus(`${S.games.length} games · ${n} analysed${got?` (${got} shared from the server)`:''}${j.warn?' · '+j.warn:''}`);
-  try{render()}catch(e){showErr('showing the page',e)}
-  // give back: share analyses the server does not have yet (25 at a time)
-  S.games.filter(g=>g.p&&isChessCom(g.url)&&j.anIndex[g.url]==null).slice(0,25).reduce((p,g)=>p.then(()=>uploadAnalysis(g)),Promise.resolve());
+  const n=S.games.filter(g=>g.rev).length,p=j.progress||{pending:0};
+  setStatus(`${S.games.length} games · ${n} analysed${p.pending?` · server analysing… ${p.done} of ${p.target}`:''}${j.warn?' · '+j.warn:''}`);
+  // don't rebuild the page under someone who is reviewing a game or solving a puzzle
+  if(!poll||(S.sel==null&&!S.tr&&(fresh.length||added))){try{render()}catch(e){showErr('showing the page',e)}}
+  pollSoon(p.pending?15000:60000); // faster while the server is busy analysing, otherwise once a minute
   return true;
 }
-async function uploadAnalysis(g){
-  if(!S.server||!g.p||!isChessCom(g.url))return;
-  try{await fetch(apiUrl('analysis',S.user),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:g.url,depth:g.depth||S.depth,p:g.p})})}catch(e){}
+let pollTimer=null;
+function pollSoon(ms){
+  clearTimeout(pollTimer);
+  const user=S.user;
+  pollTimer=setTimeout(()=>{
+    if(S.user!==user)return;
+    if(document.hidden)return pollSoon(ms);        // a background tab waits
+    syncFromServer(true).catch(()=>pollSoon(60000));
+  },ms);
 }
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.server)pollSoon(1500)});
 // Reads a chess.com answer as text first, so a non-JSON reply (blocked, rate-limited, cut off)
 // gives a readable message instead of the browser's cryptic JSON error.
 async function getJson(url){
   const r=await fetch(url),txt=await r.text();
   if(r.status===404)throw new Error('not found');
   if(!r.ok)throw new Error(`chess.com answered HTTP ${r.status}`);
+  if(!txt.length)throw new Error(`chess.com sent an empty answer: this browser or network seems to block chess.com (content blocker, VPN or Private Relay?)${S.serverWhy?` — and the ChessCoach server said: ${S.serverWhy}`:''}`);
   try{return JSON.parse(txt)}
   catch(e){throw new Error(`chess.com sent an unexpected answer (HTTP ${r.status}, ${txt.length} bytes: "${txt.slice(0,50).replace(/\s+/g,' ')}")`)}
 }
@@ -414,7 +428,6 @@ async function analyzeGame(g,onStep){
   }
   g.p=p;g.depth=S.depth;g.rev=review(g);
   save(K('p',g.url),{depth:S.depth,p,rev:g.rev});
-  uploadAnalysis(g); // share it, so the next visitor does not have to wait
   return true;
 }
 
@@ -563,20 +576,31 @@ const dateStr=t=>t?new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',
 
 function welcomeView(){
   return `<div class="card"><h3>Welcome to ChessCoach</h3>
-    <p>Type your chess.com username above and press <b>Load games</b>. ChessCoach then:</p>
-    <ol><li>analyses your games with Stockfish, right in your browser,</li><li>shows what went wrong and which openings cost you points,</li><li>turns your mistakes into <b>training puzzles</b>.</ol>
+    <p>Type your chess.com username above and press <b>Load games</b>. That’s all: from then on ChessCoach</p>
+    <ol><li>checks chess.com for your new games every minute,</li><li>analyses every game with Stockfish on the server, with chess.com-style labels (theory, great, blunder…),</li><li>shows what went wrong and which openings cost you points,</li><li>turns your mistakes into <b>training puzzles</b>.</ol>
     <p class="mute hint">No password needed. Type any chess.com username (yours, a friend’s…) and ChessCoach’s server keeps that player’s <b>public</b> games and the engine analysis, so the page loads fast for everyone who looks the name up. Your own PGN imports and your training progress never leave your device.</p></div>`;
 }
 
 function gamesView(){
   const todo=recent().filter(g=>!g.p).length;
-  let h=`<div class="card"><div class="ctl">
+  let h='';
+  if(S.server&&!S.showLocal){
+    const p=S.srv||{pending:0,done:0,target:0},t=S.checked?new Date(S.checked).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'–';
+    h+=`<div class="card"><b>☁ Automatic analysis</b>
+      <p style="margin:6px 0">Stockfish on the server analyses your newest ${MAX_ANALYSE} games on its own, and checks chess.com for new games <b>every minute</b>. Nothing to press: new reviews appear here by themselves.</p>
+      <div class="progress"><i style="width:${p.target?p.done/p.target*100:0}%"></i></div>
+      <div class="mute hint" style="margin-top:6px">${p.pending?`Working through your games: <b>${p.done} of ${p.target}</b> done.`:`All ${p.target} games analysed.`} Last checked at ${t}.</div>
+      <div class="ctl"><button data-a="refresh">↻ Check chess.com now</button><button data-a="showLocal">Analyse on this device instead</button></div></div>`;
+  }else{
+    if(S.server)h+=`<p class="hint"><a href="#" data-a="showServer" style="color:var(--accent)">‹ Back to automatic server analysis</a></p>`;
+    h+=`<div class="card"><div class="ctl">
     <label class="mute">Engine depth <select id="depth">${[12,14,16,18].map(d=>`<option ${d===S.depth?'selected':''}>${d}</option>`).join('')}</select></label>
     <button class="primary" data-a="analyzeAll" ${S.busy||!todo?'disabled':''}>Analyse ${todo} of your last ${Math.min(S.games.length,MAX_ANALYSE)} games</button>
     <button data-a="analyze10" ${S.busy||!todo?'disabled':''}>Next 10</button>
     ${S.busy?'<button data-a="stop">Stop</button>':''}
     </div><div class="mute hint">Analyses your ${MAX_ANALYSE} most recent games, roughly 20–60 s each at depth 14 (lower depth = faster). Results are saved in your browser, so each game is only analysed once. Older games: open one and press “Analyse this game”.</div>
     <div class="progress"><i id="pbar" style="width:${S.prog||0}%"></i></div><div id="ptxt" class="mute hint"></div></div>`;
+  }
   h+=`<div class="card"><div class="ctl" style="margin:0"><b>Add your own games</b><button data-a="toggleImport" style="margin-left:auto">${S.showImport?'Hide':'Paste / upload PGN'}</button></div>`;
   if(S.showImport)h+=`<p class="mute hint">Games from chess.com, lichess, over the board… anything in PGN format. Several games in one file is fine.</p>
     <textarea id="pgnText" placeholder="Paste PGN here">${esc(S.pgnDraft)}</textarea>
@@ -604,8 +628,8 @@ function reviewView(){
     ${/^https?:/.test(g.url)?`<a class="mute" href="${esc(g.url)}" target="_blank" rel="noopener">view on chess.com ↗</a>`:''}</div>`;
   if(!g.rev){
     return h+`<div class="card"><h3>${esc(g.white.username)} vs ${esc(g.black.username)}</h3>
-      <p>This game has not been analysed yet.</p>
-      <button class="primary" data-a="analyzeOne" ${S.busy?'disabled':''}>Analyse this game</button>
+      <p>This game has not been analysed yet.${S.server&&S.srv&&S.srv.pending?' The server is working through your newest games and will get to it, or you can analyse it here right now.':''}</p>
+      <button class="primary" data-a="analyzeOne" ${S.busy?'disabled':''}>Analyse this game here</button>
       ${S.busy?'<button data-a="stop">Stop</button>':''}
       <div class="progress"><i id="pbar" style="width:${S.prog||0}%"></i></div><div id="ptxt" class="mute hint"></div></div>`;
   }
@@ -903,6 +927,9 @@ const actions={
     if(S.server)fetch(apiUrl('profile',S.user),{method:'DELETE'}).catch(()=>{});
     DB.wipe(S.user.toLowerCase()+'|').catch(()=>{}).then(()=>{ls.set('cc:user','');S.user='';S.games=[];S.stored=[];S.byUrl=new Map();S.train={};S.tr=null;S.sel=null;$('#user').value='';setStatus('');render()})}},
   gotrain:()=>{S.tab='train';render()},
+  refresh:()=>{loadUser(S.user,true,true).catch(e=>showErr('loading',e))},
+  showLocal:()=>{S.showLocal=true;render()},
+  showServer:()=>{S.showLocal=false;render()},
   tstart:()=>{trainStart(false);render()},
   tstartall:()=>{trainStart(true);render()},
   tquit:()=>{S.tr=null;render()},
@@ -939,9 +966,9 @@ document.addEventListener('keydown',e=>{
     if(e.key==='ArrowLeft')actions.nav({k:S.cur-1});
     if(e.key==='ArrowRight')actions.nav({k:S.cur+1});
   }
-  if(e.key==='Enter'&&e.target.id==='user')loadUser($('#user').value,true);
+  if(e.key==='Enter'&&e.target.id==='user')loadUser($('#user').value,true,true).catch(er=>showErr('loading',er));
 });
-$('#load').onclick=()=>loadUser($('#user').value,true).catch(e=>showErr('loading',e));
+$('#load').onclick=()=>loadUser($('#user').value,true,true).catch(e=>showErr('loading',e));
 // Anything unexpected is shown on screen (and in the console) instead of failing silently.
 addEventListener('error',ev=>showErr('unexpected error',ev.error||ev.message));
 addEventListener('unhandledrejection',ev=>showErr('unexpected error',ev.reason));

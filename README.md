@@ -30,11 +30,18 @@ GPL-3.0, see [LICENSE](LICENSE). The `engine/` folder contains [Stockfish.js](ht
 
 ## Server (optional)
 
-`server/server.js` is a small dependency-free Node service that keeps a public cache of each chess.com
-username's games and their engine analysis (one JSON file per user, no accounts, no passwords), so the page
-loads fast and analysis done once is shared. It also fetches from chess.com server-side. Without it the page
-falls back to asking chess.com directly. See `deploy/` for a hardened systemd unit and the nginx snippet.
-Only public data is stored; imported PGNs and training progress stay in the visitor's browser.
+`server/server.js` is a small dependency-free Node service:
+
+- keeps a **public cache** of each chess.com username's games (one JSON file per user, no accounts, no passwords),
+- **re-checks chess.com every minute** for everyone who used the site in the last 7 days,
+- runs **Stockfish 18** itself (the same engine build the page uses, under Node, depth 16, one engine, low priority)
+  over each user's newest 100 games and every new game, round-robin between users,
+- hands the finished analysis to the page, which polls for it, so nothing has to be pressed.
+
+Nobody can upload analysis: only the server's own Stockfish writes it. Without the server the page falls back to
+asking chess.com directly and analysing in the browser. See `deploy/` for a hardened systemd unit (nice, CPU and
+memory limited) and the nginx snippet. Only public data is stored; imported PGNs and training progress stay in the
+visitor's browser.
 
 Opening theory comes from [lichess chess-openings](https://github.com/lichess-org/chess-openings) (CC0); regenerate
 `book.json` with `node tools/build-book.js`.
