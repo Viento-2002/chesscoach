@@ -178,6 +178,7 @@ async function kick() {
       current = { name, url };
       try {
         const p = await analyseGame(g);
+        if (cache.get(name) !== d) continue;           // profile was deleted while the engine was working: drop the result
         d.an[url] = { depth: DEPTH, p, seq: ++d.seq };
         persist(d);
       } catch (e) {
