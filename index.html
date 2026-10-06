@@ -69,6 +69,16 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .coach.bad{border-color:var(--blun)}.coach.ok{border-color:var(--best)}
 .coach.brilliant{border-color:var(--brill)}.coach.great{border-color:var(--great)}.coach.book{border-color:var(--book)}.coach.miss{border-color:var(--miss)}
 .c-brilliant{color:var(--brill)}.c-great{color:var(--great)}.c-book{color:var(--book)}.c-miss{color:var(--miss)}
+.brow{display:grid;grid-template-columns:minmax(90px,34%) 1fr auto;gap:10px;align-items:center;margin:6px 0}
+.brow .bval{min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+.chip{border-radius:999px;padding:5px 13px;min-height:34px}.chip.on{background:var(--accent);color:#10200a;border-color:var(--accent);font-weight:600}
+.seg{display:flex;gap:0;margin-bottom:12px}.seg button{flex:1;border-radius:0}.seg button:first-child{border-radius:8px 0 0 8px}.seg button:last-child{border-radius:0 8px 8px 0}
+.seg button.on{background:var(--accent);color:#10200a;border-color:var(--accent);font-weight:600}
+.cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.big{font-size:30px;font-weight:700;line-height:1.1}
+.goalbar{height:14px;background:var(--panel2);border-radius:7px;overflow:hidden;margin:8px 0}.goalbar i{display:block;height:100%;background:linear-gradient(90deg,#5a8f2c,var(--accent))}
+.plan li{margin:6px 0}
 .sumtab td,.sumtab th{padding:4px 8px}.sumtab td.n{text-align:center;font-weight:600;min-width:46px}.sumtab tr.zero td.n{color:var(--mute);font-weight:400}
 .bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;display:flex;min-width:80px}
 .bar i{display:block;height:100%}
@@ -108,6 +118,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 <nav id="tabs">
   <button data-tab="games" class="on">Games</button>
   <button data-tab="train">Train</button>
+  <button data-tab="goal">Goal</button>
   <button data-tab="openings">Openings</button>
   <button data-tab="insights">Insights</button>
 </nav>
@@ -193,7 +204,7 @@ function build(pgn,metaFn){
   const sans=sansOf(pgn);if(!sans.length)return null;
   const meta=metaFn(head);if(!meta)return null;
   const opening=openingName(head);
-  const g={...meta,myc:meta.me==='white'?'w':'b',opening,fam:family(opening),sans,pgn,p:null,rev:null};
+  const g={...meta,myc:meta.me==='white'?'w':'b',opening,fam:family(opening),sans,pgn,tcs:head.TimeControl||'',p:null,rev:null};
   Object.defineProperties(g,{moves:{get(){ensure(this);return this._moves}},fens:{get(){ensure(this);return this._fens}}});
   return g;
 }
@@ -232,11 +243,13 @@ async function loadUser(name,sync,manual){
   name=name.trim();if(!name)return;
   S.user=name;S.games=[];S.stored=[];S.byUrl=new Map();S.meta={synced:[]};S.train={};S.sel=null;S.tr=null;
   S.server=false;S.srv=null;S.serverWhy='';S.showLocal=false;S.checked=0;clearTimeout(pollTimer);
+  S.stats=null;S.ot=null;S.trainMode='mistakes';S.goalTc=null;
+  try{S.goal=JSON.parse(ls.get('cc:goal:'+name.toLowerCase())||'null')}catch(e){S.goal=null}
   const pending=[];
   ls.set('cc:user',name);ls.set('cc:months',$('#months').value);$('#user').value=name;
   try{
     const [games,meta,pm,tm]=await Promise.all([DB.get(K('games')),DB.get(K('meta')),DB.all(K('p')+'|'),DB.all(K('t')+'|')]);
-    if(meta)S.meta=meta;
+    if(meta){S.meta=meta;S.stats=meta.stats||null}
     (games||[]).forEach(raw=>ingest(raw,false));S.stored=games||[];
     S.games.forEach(g=>{if(pm[g.url]&&!attach(g,pm[g.url]))pending.push([g,pm[g.url]])});
     S.train=tm||{};
@@ -248,7 +261,7 @@ async function loadUser(name,sync,manual){
   if(sync&&!(await syncFromServer(false,manual)))await syncGames(); // our server first; chess.com directly if it is unreachable
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
-const REV_V=3;
+const REV_V=4;
 function attach(g,val){ // fast path: the review was saved too, no chess.js work at all
   const p=val&&(Array.isArray(val)?val:val.p),rev=val&&val.rev;
   if(!p||p.length!==g.sans.length+1||!rev||rev.v!==REV_V)return false;
@@ -290,10 +303,12 @@ async function syncFromServer(poll,manual){
     return false; // server trouble or rate limit: ask chess.com directly instead
   }
   S.server=true;S.serverWhy='';S.srv=j.progress;S.checked=j.checked;
+  if(j.stats){S.stats=j.stats;S.meta.stats=j.stats}
   let added=0;
   for(const raw of j.games)try{if(ingest(raw,true))added++}catch(e){}
   const fresh=[];
-  for(const [url,a] of Object.entries(j.analyses||{})){const g=S.byUrl.get(url);if(g&&!g.p)fresh.push([g,a])}
+  // take server analysis for new games, and also when it is deeper than what this device has
+  for(const [url,a] of Object.entries(j.analyses||{})){const g=S.byUrl.get(url);if(g&&(!g.p||(a.depth||0)>(g.depth||0)))fresh.push([g,a])}
   sortGames();
   if(fresh.length)await prepareAll(fresh);
   S.meta.since=j.seq;
@@ -435,7 +450,7 @@ async function analyzeGame(g,onStep){
 /* Opening book: positions from known opening lines (book.json, built by tools/build-book.js). */
 let BOOK=null,bookP=null;
 const loadBook=()=>bookP||(bookP=fetch('book.json').then(r=>r.ok?r.json():null)
-  .then(b=>{BOOK=b&&b.v===2?{n:b.n,e:b.e,set:new Set(b.p.split(' '))}:null}).catch(()=>{BOOK=null}));
+  .then(b=>{BOOK=b&&b.v>=2?{n:b.n,e:b.e,set:new Set(b.p.split(' ')),f:b.f||{},fv:b.fv||{},k:b.k||{},sets:{}}:null}).catch(()=>{BOOK=null}));
 const posHash=fen=>{let h=5381;const s=posKey(fen);for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return (h>>>0).toString(36)};
 const inBookPos=fen=>!!BOOK&&BOOK.set.has(posHash(fen));            // is this position known theory?
 const lineName=fen=>{if(!BOOK)return null;const i=BOOK.e[posHash(fen)];return i==null?null:BOOK.n[i]}; // name, if a named line ends here
@@ -482,7 +497,9 @@ function review(g){
     const wb=winPct(povCp(before,c)),wa=winPct(povCp(after,c));
     const isBest=!!before.b&&uci(m)===before.b;
     const loss=isBest?0:Math.max(0,wb-wa);
-    let cls=isBest?'best':loss<2?'excellent':loss<5?'good':loss<10?'inaccuracy':loss<20?'mistake':'blunder';
+    // "Best" = the engine's top move or practically as good (within 0.5% win chance): at this depth two
+    // near-equal moves swap places all the time, and chess.com's deeper analysis counts both as best.
+    let cls=(isBest||loss<0.5)?'best':loss<2?'excellent':loss<5?'good':loss<10?'inaccuracy':loss<20?'mistake':'blunder';
     const info={};
     // how much worse the second-best move would have been (only when the engine reported one)
     const gap=(before.c2!=null||before.m2!=null)?wb-winPct(povCp({c:before.c2,m:before.m2},c)):null;
@@ -499,10 +516,10 @@ function review(g){
     }
     if(cls!=='book'){
       // 2) brilliant: a good move that gives up material and still works
-      const sac=loss<2?sacrifice(m,g.fens[i],g.fens[i+1]):{net:0};
-      if(loss<2&&sac.net>=2&&wa>=45&&wb<=72){cls='brilliant';info.sac=sac.piece}
+      const sac=loss<1.5?sacrifice(m,g.fens[i],g.fens[i+1]):{net:0};
+      if(loss<1.5&&sac.net>=2&&wa>=40&&wb<=80){cls='brilliant';info.sac=sac.piece}
       // 3) great: the only move that keeps the position (the alternatives lose a lot)
-      else if(loss<1&&gap!=null&&gap>=20&&wb>=15&&wb<=92){cls='great';info.gap=gap}
+      else if(loss<0.5&&gap!=null&&gap>=15&&wb>=15&&wb<=92){cls='great';info.gap=gap}
       // 4) miss: the opponent just erred and handed you an edge, and this move let it slip
       else if(prevMover&&prevMover!==c&&prevLoss>=10&&(cls==='inaccuracy'||cls==='mistake')&&wb>=55)cls='miss';
     }
@@ -570,7 +587,7 @@ function render(){
   });
   const v=$('#view');
   if(!S.user){v.innerHTML=welcomeView();return}
-  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='openings'?openingsView():insightsView();
+  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='openings'?openingsView():insightsView();
 }
 const dateStr=t=>t?new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'}):'–';
 
@@ -726,7 +743,7 @@ function buildPuzzles(){
 }
 const isDue=p=>!S.train[p.key]||S.train[p.key].due<=Date.now();
 
-function trainView(pz){
+function mistakeView(pz){
   const due=pz.filter(isDue),mastered=pz.filter(p=>S.train[p.key]&&S.train[p.key].box>=4).length;
   let h=`<div class="cards">
     <div class="stat"><div class="mute">Mistakes to learn</div><div class="v">${pz.length}</div></div>
@@ -743,7 +760,7 @@ function trainView(pz){
     <p>You found the right move first time in <b>${t.right}</b> of <b>${t.n}</b> puzzles.</p>
     <div class="pz-actions"><button class="primary" data-a="tquit">Done</button></div></div>`;
   const p=pz.find(x=>x.key===t.queue[t.idx]);
-  if(!p){S.tr=null;return trainView(pz)}
+  if(!p){S.tr=null;return mistakeView(pz)}
   const flip=p.color==='b',c=new Chess(p.fen);
   const reveal=t.state==='right'||t.state==='answer';
   const arrows=reveal?[{...parseUci(p.best),color:'#81b64c'}]:[];
@@ -842,7 +859,7 @@ function openingsView(){
 }
 
 /* ---------- insights tab ---------- */
-function insightsView(){
+function insightsMistakes(){
   const an=S.games.filter(g=>g.rev);
   if(!an.length)return '<div class="card">Analyse some games first (Games tab) to get personal insights.</div>';
   let acc=0,tot={blunder:0,mistake:0,inaccuracy:0},ph={opening:[],middlegame:[],endgame:[]},hung=0,mcap=0,mmate=0;
@@ -934,6 +951,7 @@ const actions={
   tstartall:()=>{trainStart(true);render()},
   tquit:()=>{S.tr=null;render()},
   tsq:d=>{
+    if(S.trainMode==='openings'&&S.ot){drillTap(d.sq);return}
     const t=S.tr;if(!t||t.state!=='ask')return;
     const p=curPuzzle(),c=new Chess(p.fen),pc=c.get(d.sq);
     if(t.sel&&t.targets.includes(d.sq)){trainMove(t.sel,d.sq);return}
@@ -954,6 +972,8 @@ document.addEventListener('click',e=>{
 });
 document.addEventListener('change',e=>{
   if(e.target.id==='depth')S.depth=+e.target.value;
+  if(e.target.id==='drOpening'){S.drSel.label=e.target.value;S.drSel.variation='';render()}
+  if(e.target.id==='drVar'){S.drSel.variation=e.target.value;render()}
   if(e.target.id==='pgnFile'&&e.target.files[0]){
     const fr=new FileReader(); // FileReader works on older iPhones where Blob.text() does not
     fr.onload=()=>{S.pgnDraft=String(fr.result);const ta=$('#pgnText');if(ta)ta.value=S.pgnDraft};
@@ -972,6 +992,365 @@ $('#load').onclick=()=>loadUser($('#user').value,true,true).catch(e=>showErr('lo
 // Anything unexpected is shown on screen (and in the console) instead of failing silently.
 addEventListener('error',ev=>showErr('unexpected error',ev.error||ev.message));
 addEventListener('unhandledrejection',ev=>showErr('unexpected error',ev.reason));
+
+/* ======================================================================
+   Analytics, rating goal and opening drills
+   ====================================================================== */
+Object.assign(S,{trainMode:'mistakes',ot:null,goal:null,stats:null,goalTc:null,insTc:null,drSel:{label:'London System',variation:'',color:'white'}});
+const pct=(a,b)=>b?Math.round(a/b*100):0;
+const avgOf=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+const median=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2};
+const scoreOf=o=>{const n=o.W+o.D+o.L;return n?(o.W+o.D/2)/n*100:0};
+const wdlBar=o=>{const n=o.W+o.D+o.L;return n?`<div class="bar"><i style="width:${o.W/n*100}%;background:var(--best)"></i><i style="width:${o.D/n*100}%;background:#8b8985"></i><i style="width:${o.L/n*100}%;background:var(--blun)"></i></div>`:'<div class="bar"></div>'};
+const brow=(label,inner,val,sub)=>`<div class="brow"><div>${label}${sub?`<div class="mute hint">${sub}</div>`:''}</div><div>${inner}</div><div class="bval">${val}</div></div>`;
+const valBar=(v,max,color)=>`<div class="bar"><i style="width:${Math.max(0,Math.min(100,max?v/max*100:0))}%;background:${color||'var(--good)'}"></i></div>`;
+function lineChart(pts,opt){
+  opt=opt||{};const W=500,H=opt.h||140,pad=8;
+  if(pts.length<2)return '<div class="mute hint">Not enough games yet for a chart.</div>';
+  const ys=pts.map(p=>p.r),xs=pts.map(p=>p.t);
+  let lo=Math.min(...ys),hi=Math.max(...ys);
+  if(opt.target!=null){lo=Math.min(lo,opt.target);hi=Math.max(hi,opt.target)}
+  if(hi===lo){hi+=1;lo-=1}
+  const x0=Math.min(...xs),x1=Math.max(...xs),X=t=>pad+(t-x0)/((x1-x0)||1)*(W-2*pad),Y=r=>H-pad-(r-lo)/(hi-lo)*(H-2*pad);
+  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;background:#333;border-radius:6px">`;
+  if(opt.target!=null)s+=`<line x1="0" x2="${W}" y1="${Y(opt.target)}" y2="${Y(opt.target)}" stroke="#81b64c" stroke-dasharray="5 4"/><text x="${W-6}" y="${Y(opt.target)-5}" text-anchor="end" fill="#81b64c" font-size="12">goal ${opt.target}</text>`;
+  s+=`<path d="${pts.map((p,i)=>(i?'L':'M')+X(p.t).toFixed(1)+' '+Y(p.r).toFixed(1)).join(' ')}" fill="none" stroke="#eee" stroke-width="2" stroke-linejoin="round"/>`;
+  return s+`<text x="6" y="14" fill="#9a9792" font-size="12">${Math.round(hi)}${opt.unit||''}</text><text x="6" y="${H-5}" fill="#9a9792" font-size="12">${Math.round(lo)}${opt.unit||''}</text></svg>`;
+}
+
+/* ---- clocks: time used per move, from the [%clk] comments in the PGN ---- */
+function tcParts(g){const m=String(g.tcs||'').match(/^(\d+)(?:\+(\d+))?$/);return m?{base:+m[1],inc:+(m[2]||0)}:null}
+function clocksOf(g){
+  if(g._clk!==undefined)return g._clk;
+  const out=[],re=/\[%clk (\d+):(\d{2}):(\d{2}(?:\.\d+)?)\]/g;let m;
+  while((m=re.exec(g.pgn)))out.push(+m[1]*3600+ +m[2]*60+ +m[3]);
+  return g._clk=out.length>=4?out:null;
+}
+const lowClock=tp=>Math.min(30,Math.max(5,tp.base*0.1)); // "short of time" threshold in seconds
+
+/* ---- one pass over everything we can know about the player ---- */
+const END={checkmated:'checkmate',resigned:'resignation',timeout:'running out of time',abandoned:'abandonment',agreed:'agreement',repetition:'repetition',stalemate:'stalemate',insufficient:'insufficient material','50move':'50-move rule',timevsinsufficient:'time vs insufficient material'};
+let _an=null,_anKey='';
+function analytics(){
+  const key=S.games.length+'|'+S.games.filter(g=>g.rev).length+'|'+(S.games[0]&&S.games[0].url);
+  if(_an&&_anKey===key)return _an;
+  const chron=[...S.games].sort((a,b)=>a.time-b.time);
+  const A={n:chron.length,chron,wdl:{W:0,D:0,L:0},color:{white:{W:0,D:0,L:0},black:{W:0,D:0,L:0}},tc:{},band:{},hour:{},dow:{},endW:{},endL:{},endD:{},plies:0,afterLoss:{n:0,w:0},streakW:0,streakL:0};
+  const bandOf=d=>d>=100?'1 Much stronger (+100)':d>=25?'2 Stronger (+25 to +100)':d>-25?'3 Similar (±25)':d>-100?'4 Weaker (−25 to −100)':'5 Much weaker (−100)';
+  const hourOf=h=>h<6?'1 Night (0–6)':h<12?'2 Morning (6–12)':h<18?'3 Afternoon (12–18)':'4 Evening (18–24)';
+  const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],z=()=>({W:0,D:0,L:0});
+  let prev=null,cw=0,cl=0;
+  for(const g of chron){
+    A.wdl[g.res]++;A.color[g.me][g.res]++;A.plies+=g.sans.length;
+    const t=A.tc[g.tc]=A.tc[g.tc]||{...z(),pts:[]};t[g.res]++;if(g.myR&&g.tc!=='import')t.pts.push({t:g.time,r:g.myR});
+    if(g.oppR&&g.myR){const b=A.band[bandOf(g.oppR-g.myR)]=A.band[bandOf(g.oppR-g.myR)]||z();b[g.res]++}
+    if(g.time){const d=new Date(g.time*1000),hb=hourOf(d.getHours()),wd=DOW[d.getDay()];(A.hour[hb]=A.hour[hb]||z())[g.res]++;(A.dow[wd]=A.dow[wd]||z())[g.res]++}
+    const oc=g.me==='white'?'black':'white',mine=g[g.me]&&g[g.me].result,opp=g[oc]&&g[oc].result;
+    if(mine){const why=g.res==='W'?(END[opp]||opp):(END[mine]||mine),tgt=g.res==='W'?A.endW:g.res==='L'?A.endL:A.endD;tgt[why]=(tgt[why]||0)+1}
+    if(prev&&prev.res==='L'&&g.time-prev.time<3600){A.afterLoss.n++;if(g.res==='W')A.afterLoss.w++}
+    if(g.res==='W'){cw++;cl=0}else if(g.res==='L'){cl++;cw=0}else{cw=0;cl=0}
+    A.streakW=Math.max(A.streakW,cw);A.streakL=Math.max(A.streakL,cl);prev=g;
+  }
+  // time management (needs the clock comments, so only chess.com games)
+  const T=A.time={games:0,lowGames:0,lowLost:0,lowWon:0,timeouts:0,used:{opening:[],middlegame:[],endgame:[]}};
+  for(const g of chron){
+    const clk=clocksOf(g),tp=tcParts(g);if(!clk||!tp)continue;
+    T.games++;const thr=lowClock(tp);let low=false;
+    for(let i=g.myc==='w'?0:1;i<clk.length;i+=2){
+      if(clk[i]<thr)low=true;
+      T.used[phase(i)].push(Math.max(0,(i>=2?clk[i-2]:tp.base)+tp.inc-clk[i]));
+    }
+    if(low){T.lowGames++;if(g.res==='L')T.lowLost++;if(g.res==='W')T.lowWon++}
+    if(g.res==='L'&&g[g.me]&&g[g.me].result==='timeout')T.timeouts++;
+  }
+  // engine-based (analysed games only)
+  const P=A.eng={n:0,acc:[],accBy:{white:[],black:[]},tcAcc:{},famAcc:{},phase:{opening:[],middlegame:[],endgame:[]},piece:{},bucket:{},tags:{hung:0,missedcap:0,missedmate:0},conv:{n:0,w:0},save:{n:0,s:0},firstBad:[],low:{n:0,loss:0,bad:0},ok:{n:0,loss:0,bad:0},cls:{}};
+  CLASSES.forEach(c=>P.cls[c]=0);
+  for(const g of chron){
+    if(!g.rev)continue;
+    const r=g.rev,me=g.myc;P.n++;
+    P.acc.push({t:P.n,r:r.acc[me]});P.accBy[g.me].push(r.acc[me]);
+    (P.tcAcc[g.tc]=P.tcAcc[g.tc]||[]).push(r.acc[me]);(P.famAcc[g.fam]=P.famAcc[g.fam]||[]).push(r.acc[me]);
+    const clk=clocksOf(g),tp=tcParts(g),thr=tp?lowClock(tp):0;let first=null;
+    for(const m of r.moves){
+      if(m.mover!==me)continue;
+      P.cls[m.cls]++;P.phase[phase(m.i)].push(m.loss);
+      const bad=m.cls==='mistake'||m.cls==='blunder'||m.cls==='miss',mn=Math.floor(m.i/2)+1;
+      const pc=/^[KQRBN]/.test(m.san)?m.san[0]:/^O/.test(m.san)?'O':'P';
+      const a=P.piece[pc]=P.piece[pc]||{n:0,bad:0};a.n++;if(bad)a.bad++;
+      const bk=mn<=10?'1–10':mn<=20?'11–20':mn<=30?'21–30':'31+',b=P.bucket[bk]=P.bucket[bk]||{n:0,bad:0};b.n++;if(bad)b.bad++;
+      if(bad&&first===null)first=mn;
+      m.tags.forEach(t=>P.tags[t.k]++);
+      if(clk&&tp&&clk[m.i]!=null){const w=clk[m.i]<thr?P.low:P.ok;w.n++;w.loss+=m.loss;if(bad)w.bad++}
+    }
+    if(first!==null)P.firstBad.push(first);
+    const win=r.win.map(v=>me==='w'?v:100-v);
+    if(Math.max(...win)>=80){P.conv.n++;if(g.res==='W')P.conv.w++}
+    if(Math.min(...win)<=20){P.save.n++;if(g.res!=='L')P.save.s++}
+  }
+  _an=A;_anKey=key;return A;
+}
+
+/* ---- Insights ---- */
+function insightsView(){
+  if(!S.games.length)return '<div class="card mute">Load some games first.</div>';
+  const A=analytics(),P=A.eng,T=A.time,n=A.n;
+  const row=(label,o,sub)=>brow(label,wdlBar(o),`${scoreOf(o).toFixed(0)}%`,sub||`${o.W+o.D+o.L} games`);
+  let h=`<div class="cards">
+    <div class="stat"><div class="mute">Games</div><div class="v">${n}</div></div>
+    <div class="stat"><div class="mute">Win rate</div><div class="v">${pct(A.wdl.W,n)}%</div><div class="mute hint">${A.wdl.W}W ${A.wdl.D}D ${A.wdl.L}L</div></div>
+    <div class="stat"><div class="mute">Avg. length</div><div class="v">${Math.round(A.plies/n/2)}</div><div class="mute hint">moves</div></div>
+    <div class="stat"><div class="mute">Analysed</div><div class="v">${P.n}</div><div class="mute hint">of ${n}</div></div></div>`;
+  // rating over time
+  const tcs=Object.entries(A.tc).filter(([k,v])=>k!=='import'&&v.pts.length>1).sort((a,b)=>b[1].pts.length-a[1].pts.length).map(x=>x[0]);
+  if(tcs.length){
+    const tc=tcs.includes(S.insTc)?S.insTc:tcs[0],pts=A.tc[tc].pts;
+    h+=`<div class="card"><h3>Rating over time</h3><div class="chips">${tcs.map(k=>`<button class="chip ${k===tc?'on':''}" data-a="instc" data-tc="${k}">${k}</button>`).join('')}</div>
+      ${lineChart(pts)}<div class="mute hint" style="margin-top:6px">${pts[0].r} → <b>${pts[pts.length-1].r}</b> over ${pts.length} games (${pts[pts.length-1].r-pts[0].r>=0?'+':''}${pts[pts.length-1].r-pts[0].r}). Set a target on the <a href="#" data-a="gogoal">Goal</a> tab.</div></div>`;
+  }
+  // results
+  const tcRows=Object.entries(A.tc).sort((a,b)=>(b[1].W+b[1].D+b[1].L)-(a[1].W+a[1].D+a[1].L)).map(([k,o])=>row(k,o)).join('');
+  const bandRows=Object.entries(A.band).sort().map(([k,o])=>row(k.slice(2),o)).join('');
+  const hourRows=Object.entries(A.hour).sort().map(([k,o])=>row(k.slice(2),o)).join('');
+  const dowRows=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].filter(d=>A.dow[d]).map(d=>row(d,A.dow[d])).join('');
+  h+=`<div class="cols2"><div class="card"><h3>Results by colour</h3>${row('White',A.color.white)}${row('Black',A.color.black)}</div>
+    <div class="card"><h3>By time control</h3>${tcRows}</div>
+    <div class="card"><h3>By opponent strength</h3>${bandRows||'<div class="mute hint">No rating data.</div>'}</div>
+    <div class="card"><h3>By time of day</h3>${hourRows}<div class="mute hint" style="margin-top:6px">Your local time. Small samples are noisy.</div></div>
+    <div class="card"><h3>By weekday</h3>${dowRows}</div></div>`;
+  // how games end
+  const endList=(o,color)=>{const e=Object.entries(o).sort((a,b)=>b[1]-a[1]),tot=e.reduce((s,x)=>s+x[1],0);return e.map(([k,v])=>brow(k,valBar(v,tot,color),`${v} · ${pct(v,tot)}%`)).join('')||'<div class="mute hint">–</div>'};
+  h+=`<div class="cols2"><div class="card"><h3>How you win</h3>${endList(A.endW,'var(--best)')}</div><div class="card"><h3>How you lose</h3>${endList(A.endL,'var(--blun)')}</div></div>`;
+  const overall=pct(A.wdl.W,n);
+  h+=`<div class="card"><h3>Streaks & tilt</h3><div class="cards" style="margin:0">
+    <div class="stat"><div class="mute">Longest win streak</div><div class="v c-best">${A.streakW}</div></div>
+    <div class="stat"><div class="mute">Longest losing streak</div><div class="v c-blunder">${A.streakL}</div></div>
+    <div class="stat"><div class="mute">Win rate right after a loss</div><div class="v">${A.afterLoss.n>=5?pct(A.afterLoss.w,A.afterLoss.n)+'%':'–'}</div><div class="mute hint">${A.afterLoss.n>=5?(pct(A.afterLoss.w,A.afterLoss.n)<overall-8?'lower than your '+overall+'% overall: consider a break after a loss':'in line with your '+overall+'% overall'):'needs more games'}</div></div></div></div>`;
+  // time management
+  if(T.games>=3){
+    const ph=['opening','middlegame','endgame'].map(k=>[k,avgOf(T.used[k])]),mx=Math.max(...ph.map(x=>x[1]),1);
+    h+=`<div class="card"><h3>Time management</h3>
+      ${ph.map(([k,v])=>brow(k,valBar(v,mx,'var(--good)'),`${v.toFixed(1)} s`,'average per move')).join('')}
+      <div class="cards" style="margin:10px 0 0"><div class="stat"><div class="mute">Games short of time</div><div class="v">${pct(T.lowGames,T.games)}%</div><div class="mute hint">${T.lowGames} of ${T.games}</div></div>
+      <div class="stat"><div class="mute">…of those you lost</div><div class="v c-blunder">${pct(T.lowLost,T.lowGames)}%</div></div>
+      <div class="stat"><div class="mute">Lost on time</div><div class="v">${T.timeouts}</div></div></div>
+      ${P.low.n>=8&&P.ok.n>=8?`<p class="mute" style="margin-bottom:0">When you are short of time you lose <b>${avgOf([P.low.loss/P.low.n]).toFixed(1)}%</b> win chance per move, against <b>${(P.ok.loss/P.ok.n).toFixed(1)}%</b> otherwise${P.low.loss/P.low.n>P.ok.loss/P.ok.n*1.5?' — time trouble is costing you games':''}.</p>`:''}</div>`;
+  }
+  // engine-based
+  if(P.n){
+    const ph=['opening','middlegame','endgame'].map(k=>[k,avgOf(P.phase[k])]),worst=ph.slice().sort((a,b)=>b[1]-a[1])[0];
+    h+=`<div class="cols2"><div class="card"><h3>Accuracy <span class="mute hint">(${P.n} analysed games)</span></h3>
+      <div class="big">${avgOf(P.acc.map(x=>x.r)).toFixed(0)}%</div>${lineChart(P.acc,{h:100,unit:'%'})}
+      ${brow('As White',valBar(avgOf(P.accBy.white),100,'var(--best)'),P.accBy.white.length?avgOf(P.accBy.white).toFixed(0)+'%':'–')}
+      ${brow('As Black',valBar(avgOf(P.accBy.black),100,'var(--best)'),P.accBy.black.length?avgOf(P.accBy.black).toFixed(0)+'%':'–')}
+      ${Object.entries(P.tcAcc).map(([k,v])=>brow(k,valBar(avgOf(v),100,'var(--good)'),avgOf(v).toFixed(0)+'%')).join('')}</div>
+      <div class="card"><h3>Where you lose the most</h3><p style="margin-top:0">Your biggest leak is the <b>${worst[0]}</b>.</p>
+      ${ph.map(([k,v])=>brow(k,valBar(v,10,k===worst[0]?'var(--mist)':'var(--good)'),`${v.toFixed(1)}%`,'win chance lost per move')).join('')}</div></div>`;
+    const bk=['1–10','11–20','21–30','31+'].filter(k=>P.bucket[k]),pcs=[['K','King'],['Q','Queen'],['R','Rook'],['B','Bishop'],['N','Knight'],['P','Pawn'],['O','Castling']].filter(([k])=>P.piece[k]&&P.piece[k].n>=5);
+    h+=`<div class="cols2"><div class="card"><h3>When your mistakes happen</h3><div class="mute hint">Mistakes + blunders + misses per 100 moves, by move number.</div>
+      ${bk.map(k=>brow('Moves '+k,valBar(P.bucket[k].bad/P.bucket[k].n*100,25,'var(--mist)'),(P.bucket[k].bad/P.bucket[k].n*100).toFixed(1),`${P.bucket[k].n} moves`)).join('')}
+      <p class="mute" style="margin-bottom:0">Your first real mistake comes around move <b>${Math.round(median(P.firstBad))||'–'}</b> (typical game).</p></div>
+      <div class="card"><h3>Which pieces you go wrong with</h3><div class="mute hint">Share of that piece's moves that were mistakes.</div>
+      ${pcs.map(([k,nm])=>brow(nm,valBar(P.piece[k].bad/P.piece[k].n*100,25,'var(--mist)'),(P.piece[k].bad/P.piece[k].n*100).toFixed(1)+'%',`${P.piece[k].n} moves`)).join('')}</div></div>`;
+    h+=`<div class="card"><h3>Conversion & resilience</h3><div class="cards" style="margin:0">
+      <div class="stat"><div class="mute">Winning positions converted</div><div class="v">${P.conv.n?pct(P.conv.w,P.conv.n)+'%':'–'}</div><div class="mute hint">${P.conv.n} games where you were clearly better</div></div>
+      <div class="stat"><div class="mute">Lost positions saved</div><div class="v">${P.save.n?pct(P.save.s,P.save.n)+'%':'–'}</div><div class="mute hint">${P.save.n} games where you were clearly worse</div></div>
+      <div class="stat"><div class="mute">Pieces left hanging</div><div class="v c-blunder">${P.tags.hung}</div></div>
+      <div class="stat"><div class="mute">Free pieces missed</div><div class="v c-mistake">${P.tags.missedcap}</div></div>
+      <div class="stat"><div class="mute">Mates missed</div><div class="v">${P.tags.missedmate}</div></div></div></div>`;
+    // openings
+    const fams=Object.entries(P.famAcc).map(([f,v])=>{const gs=A.chron.filter(g=>g.fam===f),o={W:0,D:0,L:0};gs.forEach(g=>o[g.res]++);return {f,n:gs.length,o,acc:avgOf(v)}}).filter(x=>x.n>=3).sort((a,b)=>scoreOf(b.o)-scoreOf(a.o));
+    if(fams.length>=2)h+=`<div class="card"><h3>Your openings: best and worst</h3>${fams.slice(0,4).concat(fams.length>6?fams.slice(-3):[]).map(x=>brow(esc(x.f),wdlBar(x.o),`${scoreOf(x.o).toFixed(0)}%`,`${x.n} games · accuracy ${x.acc.toFixed(0)}%`)).join('')}
+      <div class="pz-actions"><button data-a="tabto" data-t="train" data-m="openings">Drill an opening</button></div></div>`;
+  }else h+='<div class="card"><h3>More analytics coming</h3><p class="mute" style="margin:0">Accuracy, mistake patterns and conversion stats appear as the server analyses your games.</p></div>';
+  return h+insightsMistakes();
+}
+
+/* ---- Rating goal ---- */
+const labelOf=name=>{if(!BOOK)return null;const n=String(name).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+  for(const [lab,[key,mode]] of Object.entries(BOOK.k)){if(mode==='start'?n.startsWith(key):n.includes(key))return lab}return null};
+function planItems(A){
+  const P=A.eng,T=A.time,out=[];
+  if(P.n>=3){
+    const ph=['opening','middlegame','endgame'].map(k=>[k,avgOf(P.phase[k])]).sort((a,b)=>b[1]-a[1])[0];
+    out.push(`Your biggest leak is the <b>${ph[0]}</b>: you lose ${ph[1].toFixed(1)}% win chance per move there. Review those moments in your games.`);
+    if(P.tags.hung>=3)out.push(`You left a piece hanging <b>${P.tags.hung}</b> times. Before every move ask: <i>what does my last move leave undefended?</i>`);
+    if(P.conv.n>=3&&P.conv.w/P.conv.n<.75)out.push(`You win only <b>${pct(P.conv.w,P.conv.n)}%</b> of the games where you were clearly better: practise converting (trade pieces, avoid counterplay).`);
+  }
+  const fams=Object.entries(A.chron.reduce((m,g)=>{(m[g.fam]=m[g.fam]||{W:0,D:0,L:0})[g.res]++;return m},{})).map(([f,o])=>({f,o,n:o.W+o.D+o.L})).filter(x=>x.n>=4).sort((a,b)=>scoreOf(a.o)-scoreOf(b.o));
+  if(fams.length&&scoreOf(fams[0].o)<45){const lab=labelOf(fams[0].f);out.push(`Your weakest opening is the <b>${esc(fams[0].f)}</b> (score ${scoreOf(fams[0].o).toFixed(0)}% in ${fams[0].n} games).${lab?` <a href="#" data-a="drillFor" data-l="${esc(lab)}">Drill the ${esc(lab)} →</a>`:''}`)}
+  if(T.games>=5&&T.lowGames/T.games>=.25)out.push(`You are short of time in <b>${pct(T.lowGames,T.games)}%</b> of your games${T.timeouts?` and lost ${T.timeouts} on the clock`:''}: play the first 10 moves faster (theory) and save thinking time for the middlegame.`);
+  if(A.afterLoss.n>=8&&pct(A.afterLoss.w,A.afterLoss.n)<pct(A.wdl.W,A.n)-10)out.push(`Right after a loss you win only <b>${pct(A.afterLoss.w,A.afterLoss.n)}%</b>: take a short break instead of playing on tilted.`);
+  const due=buildPuzzles().filter(isDue).length;
+  if(due)out.push(`<b>${due}</b> of your own mistakes are waiting in <a href="#" data-a="tabto" data-t="train" data-m="mistakes">Train</a>.`);
+  if(!out.length)out.push('Analyse more games and the server will give you personal advice here.');
+  return out;
+}
+function goalView(){
+  const A=analytics();
+  const tcs=Object.entries(A.tc).filter(([k,v])=>k!=='import'&&v.pts.length).sort((a,b)=>b[1].pts.length-a[1].pts.length).map(x=>x[0]);
+  if(!tcs.length)return '<div class="card"><h3>Rating goal</h3><p class="mute" style="margin:0">Load some chess.com games first: this tab follows your rating and your target.</p></div>';
+  const tc=tcs.includes(S.goalTc)?S.goalTc:(S.goal&&tcs.includes(S.goal.tc)?S.goal.tc:tcs[0]);
+  const pts=A.tc[tc].pts,st=S.stats&&S.stats[tc],cur=st&&st.rating?st.rating:pts[pts.length-1].r;
+  const goal=S.goal&&S.goal.tc===tc?S.goal:null;
+  let h=`<div class="card"><h3>Your rating goal</h3><div class="chips">${tcs.map(k=>`<button class="chip ${k===tc?'on':''}" data-a="goaltc" data-tc="${k}">${k}</button>`).join('')}</div>
+    <div class="cards" style="margin:8px 0"><div class="stat"><div class="mute">Current ${tc} rating</div><div class="big">${cur}</div></div>
+    ${st&&st.best?`<div class="stat"><div class="mute">Personal best</div><div class="big">${st.best}</div></div>`:''}
+    ${goal?`<div class="stat"><div class="mute">Target</div><div class="big" style="color:var(--accent)">${goal.target}</div></div>`:''}</div>`;
+  if(goal){
+    const start=goal.startR,span=Math.max(1,goal.target-start),done=Math.max(0,Math.min(100,(cur-start)/span*100));
+    h+=cur>=goal.target?`<div class="coach ok"><b>🎉 Goal reached!</b> You are at ${cur}. Set a new target below.</div>`
+      :`<div class="goalbar"><i style="width:${done}%"></i></div><div class="mute">${start} → <b>${goal.target}</b>: <b>${goal.target-cur}</b> points to go (${Math.round(done)}% of the way).</div>`;
+  }else h+='<p class="mute">Set a target below and ChessCoach tracks your progress and tells you what to work on.</p>';
+  h+=`<div class="ctl" style="margin-top:12px"><input id="goalTarget" type="number" inputmode="numeric" min="100" max="3500" value="${goal?goal.target:cur+100}" style="width:110px">
+    <button data-a="goaladd" data-d="50">+50</button><button data-a="goaladd" data-d="100">+100</button><button data-a="goaladd" data-d="200">+200</button>
+    <button class="primary" data-a="goalset" data-tc="${tc}" data-cur="${cur}">${goal?'Update goal':'Set goal'}</button>${goal?'<button data-a="goalclear">Remove</button>':''}</div></div>`;
+  // chart + pace
+  const recent=pts.filter(p=>p.t>=Date.now()/1000-30*864e3);
+  let pace='';
+  if(recent.length>=4){
+    const xs=recent.map(p=>p.t/864e3),ys=recent.map(p=>p.r),mx=avgOf(xs),my=avgOf(ys),spanDays=Math.max(...xs)-Math.min(...xs);
+    const slope=xs.reduce((s,x,i)=>s+(x-mx)*(ys[i]-my),0)/(xs.reduce((s,x)=>s+(x-mx)**2,0)||1)*7; // rating points per week
+    const net=recent[recent.length-1].r-recent[0].r,trend=spanDays>=3; // a weekly trend needs games spread over a few days
+    pace=`<p style="margin:8px 0 0">Last 30 days: <b>${net>=0?'+':''}${net}</b> rating over ${recent.length} games${trend?` (trend ${slope>=0?'+':''}${slope.toFixed(1)} per week)`:''}.`;
+    if(trend&&goal&&cur<goal.target)pace+=slope>0.5?` At this pace you reach ${goal.target} in about <b>${Math.ceil((goal.target-cur)/slope)} weeks</b>.`:` <b>You are not trending towards the target yet</b>: the plan below shows what to change.`;
+    pace+='</p>';
+  }
+  const deltas=pts.slice(-40).map((p,i,a)=>i?p.r-a[i-1].r:null).filter(x=>x!=null),perGame=avgOf(deltas);
+  const lastG=A.chron.filter(g=>g.tc===tc).slice(-20),form={W:0,D:0,L:0};lastG.forEach(g=>form[g.res]++);
+  h+=`<div class="card"><h3>Rating history</h3>${lineChart(pts,{target:goal?goal.target:null})}${pace}
+    <div style="margin-top:10px">${brow('Last 20 games',wdlBar(form),`${form.W}W ${form.D}D ${form.L}L`)}</div>
+    ${goal&&cur<goal.target&&perGame>0.3?`<p class="mute" style="margin-bottom:0">Recent average: <b>${perGame>=0?'+':''}${perGame.toFixed(1)}</b> per game, so roughly <b>${Math.ceil((goal.target-cur)/perGame)}</b> more games at this form.</p>`:''}</div>`;
+  h+=`<div class="card"><h3>How to get there</h3><ul class="plan" style="padding-left:20px;margin:0">${planItems(A).map(x=>`<li>${x}</li>`).join('')}</ul></div>`;
+  return h;
+}
+
+/* ---- Train: your mistakes, or opening drills ---- */
+function trainView(pz){
+  const m=S.trainMode;
+  return `<div class="seg"><button class="${m==='mistakes'?'on':''}" data-a="tmode" data-m="mistakes">Your mistakes</button><button class="${m==='openings'?'on':''}" data-a="tmode" data-m="openings">Opening drills</button></div>`
+    +(m==='openings'?drillView():mistakeView(pz));
+}
+function famSet(label,variation){
+  if(!BOOK||!BOOK.f[label])return null;
+  const k=label+'|'+(variation||'');
+  if(!BOOK.sets[k])BOOK.sets[k]=new Set(String(variation?(BOOK.fv[label]||{})[variation]:BOOK.f[label]).split(' '));
+  return BOOK.sets[k];
+}
+function theoryMoves(fen,set){
+  const c=new Chess(fen),out=[];
+  for(const m of c.moves({verbose:true})){c.move(m);if(set.has(posHash(c.fen())))out.push({san:m.san,from:m.from,to:m.to});c.undo()}
+  return out;
+}
+function cardUpdate(key,success){
+  const pr=S.train[key]||{box:0,due:0,seen:0,ok:0};pr.seen++;
+  if(success){pr.ok++;pr.box=Math.min(5,pr.box+1);pr.due=Date.now()+DAYS[pr.box]*864e5}else{pr.box=0;pr.due=Date.now()+10*60e3}
+  S.train[key]=pr;save(K('t',key),pr);
+}
+function drillStats(prefix){let n=0,m=0;for(const [k,v] of Object.entries(S.train))if(k.startsWith(prefix)){n++;if(v.box>=3)m++}return {n,m}}
+function drillName(o){const n=lineName(o.chess.fen());if(n)o.name=n}
+function drillStart(){
+  const {label,variation,color}=S.drSel,set=famSet(label,variation);if(!set)return;
+  S.ot={label,variation,color,set,key:`${label}|${variation||''}|${color}`,chess:new Chess(),name:'',n:0,right:0,state:'ask',sel:null,targets:[],last:null,msg:'',counted:false,hint:false,theory:[],ended:false};
+  drillAdvance();
+}
+function drillEnd(o){o.state='done';o.sel=null;o.targets=[]}
+function drillAdvance(){
+  const o=S.ot;
+  for(let guard=0;guard<80;guard++){
+    const c=o.chess,tm=theoryMoves(c.fen(),o.set);
+    if(!tm.length){drillEnd(o);return}
+    if((c.turn()==='w'?'white':'black')===o.color){Object.assign(o,{state:'ask',counted:false,hint:false,theory:tm,sel:null,targets:[],msg:''});return}
+    // the opponent plays a theory move, more often towards positions you have not mastered yet
+    const w=tm.map(m=>{const c2=new Chess(c.fen());c2.move(m.san);const cd=S.train[`op|${o.key}|${posKey(c2.fen())}`];return !cd||cd.due<=Date.now()?3:1});
+    let r=Math.random()*w.reduce((a,b)=>a+b,0),i=0;for(;i<w.length-1;i++){r-=w[i];if(r<=0)break}
+    c.move(tm[i].san);o.last=[tm[i].from,tm[i].to];drillName(o);
+  }
+  drillEnd(o);
+}
+function drillTap(sq){
+  const o=S.ot;if(!o||o.state!=='ask')return;
+  const c=o.chess,pc=c.get(sq);
+  if(o.sel&&o.targets.includes(sq)){drillMove(o.sel,sq);return}
+  if(pc&&pc.color===c.turn()){o.sel=sq;o.hint=false;o.targets=c.moves({square:sq,verbose:true}).map(m=>m.to)}else{o.sel=null;o.targets=[]}
+  render();
+}
+function drillMove(from,to){
+  const o=S.ot,c=o.chess,fen=c.fen(),ck=`op|${o.key}|${posKey(fen)}`;
+  const hit=o.theory.find(m=>m.from===from&&m.to===to);
+  o.sel=null;o.targets=[];
+  if(hit){
+    if(!o.counted){o.counted=true;o.n++;o.right++;cardUpdate(ck,true)}
+    c.move(hit.san);o.last=[from,to];drillName(o);
+    if(o.n>=14){drillEnd(o);render();return}
+    drillAdvance();render();return;
+  }
+  const t=new Chess(fen).move({from,to,promotion:'q'});
+  if(!t){render();return}
+  if(!o.counted){o.counted=true;o.n++;cardUpdate(ck,false)}
+  const after=new Chess(fen);after.move(t.san);
+  const other=inBookPos(after.fen())?lineName(after.fen()):null;
+  o.msg=`<b>${t.san}</b> is not ${esc(o.label)} theory here. ${inBookPos(after.fen())?`It is a known move in another opening${other?` (${esc(niceName(other))})`:''}.`:'It leaves known theory.'}`;
+  o.state='wrong';o.last=[from,to];render();
+}
+function drillMenu(){
+  if(!BOOK)return '<div class="card"><h3>Opening drills</h3><p class="mute" style="margin:0">Loading the opening database…</p></div>';
+  const mine={};S.games.forEach(g=>{const l=labelOf(g.opening);if(l)mine[l]=(mine[l]||0)+1});
+  const yours=Object.entries(mine).sort((a,b)=>b[1]-a[1]).map(x=>x[0]),rest=Object.keys(BOOK.f).filter(l=>!yours.includes(l));
+  const sel=S.drSel;if(!BOOK.f[sel.label])sel.label=yours[0]||rest[0];
+  const vars=Object.keys(BOOK.fv[sel.label]||{}).sort(),opt=l=>`<option value="${esc(l)}" ${l===sel.label?'selected':''}>${esc(l)}</option>`;
+  const set=famSet(sel.label,sel.variation),st=drillStats(`op|${sel.label}|${sel.variation||''}|${sel.color}|`);
+  return `<div class="card"><h3>Opening drills</h3>
+    <p class="mute" style="margin-top:0">Learn the real theory move by move. You play ${sel.color==='white'?'White':'Black'}; the opponent answers with known theory. Positions you get right come back later; misses come back soon.</p>
+    <div class="chips"><button class="chip ${sel.color==='white'?'on':''}" data-a="drcolor" data-c="white">I play White</button><button class="chip ${sel.color==='black'?'on':''}" data-a="drcolor" data-c="black">I play Black</button></div>
+    <div class="ctl"><select id="drOpening" style="flex:1;min-width:0">${yours.length?`<optgroup label="From your games">${yours.map(opt).join('')}</optgroup>`:''}<optgroup label="${yours.length?'More openings':'Openings'}">${rest.map(opt).join('')}</optgroup></select></div>
+    ${vars.length?`<div class="ctl"><select id="drVar" style="flex:1;min-width:0"><option value="">All variations</option>${vars.map(v=>`<option value="${esc(v)}" ${v===sel.variation?'selected':''}>${esc(v)}</option>`).join('')}</select></div>`:''}
+    <div class="mute hint">${set?set.size:0} theory positions · you have drilled <b>${st.n}</b> positions here, <b>${st.m}</b> mastered.</div>
+    <div class="pz-actions"><button class="primary" data-a="dstart">Start drill</button></div></div>`;
+}
+function drillView(){
+  const o=S.ot;
+  if(!o)return drillMenu();
+  const flip=o.color==='black',reveal=o.state==='reveal';
+  const arrows=reveal?o.theory.slice(0,4).map(m=>({from:m.from,to:m.to,color:'#81b64c'})):[];
+  const sel=o.state==='ask'?(o.sel||(o.hint&&o.theory[0]?o.theory[0].from:null)):null;
+  let h=`<div class="row"><div><div class="boardwrap">${boardHTML(o.chess.fen(),flip,o.last,arrows,{click:o.state==='ask',sel,targets:o.targets})}</div></div>
+    <div class="side"><div class="card"><div class="mute hint">${esc(o.label)}${o.variation?' · '+esc(o.variation):''} · you play ${o.color}</div>
+    <h3 style="margin:6px 0">${o.name?esc(niceName(o.name)):'Starting position'}</h3>`;
+  if(o.state==='ask')h+=`<p class="mute">Your move ${Math.floor(o.chess.history().length/2)+1}: play a theory move. Tap a piece, then its square.</p><div class="pz-actions"><button data-a="dhint">💡 Hint</button><button data-a="dreveal">Show theory</button></div>`;
+  if(o.state==='wrong')h+=`<div class="coach bad">${o.msg}</div><div class="pz-actions"><button class="primary" data-a="dretry">Try again</button><button data-a="dreveal">Show theory</button></div>`;
+  if(reveal)h+=`<div class="coach ok">Theory here: <b>${o.theory.map(m=>m.san).join(', ')}</b>${o.theory.length>1?'. Any of these is fine; the first is the most common.':''}</div><div class="pz-actions"><button class="primary" data-a="dnext">Play ${o.theory[0].san} & continue</button></div>`;
+  if(o.state==='done'){
+    const ok=pct(o.right,o.n);
+    h+=`<div class="coach ok"><b>Line finished.</b> You found the theory move first time in <b>${o.right}</b> of <b>${o.n}</b> positions (${ok}%).${o.name?`<br>You ended in: <b>${esc(niceName(o.name))}</b>.`:''}</div>
+      <div class="pz-actions"><button class="primary" data-a="dstart">Another line</button><button data-a="dquit">Choose another opening</button></div>`;
+  }
+  if(o.state!=='done')h+=`<div style="margin-top:10px"><a href="#" data-a="dquit" class="mute hint">End drill</a></div>`;
+  return h+'</div></div></div>';
+}
+
+Object.assign(actions,{
+  tmode:d=>{S.trainMode=d.m;render()},
+  tabto:d=>{S.tab=d.t;if(d.m)S.trainMode=d.m;S.sel=null;render();scrollTo(0,0)},
+  gogoal:()=>{S.tab='goal';render()},
+  drillFor:d=>{S.drSel={label:d.l,variation:'',color:S.drSel.color};S.ot=null;S.tab='train';S.trainMode='openings';render();scrollTo(0,0)},
+  instc:d=>{S.insTc=d.tc;render()},
+  goaltc:d=>{S.goalTc=d.tc;render()},
+  goaladd:d=>{const i=$('#goalTarget');if(i)i.value=(+i.value||0)+ +d.d},
+  goalset:d=>{
+    const t=Math.round(+$('#goalTarget').value);if(!(t>=100&&t<=3500))return;
+    S.goal={tc:d.tc,target:t,startR:+d.cur,startAt:Date.now()};ls.set('cc:goal:'+S.user.toLowerCase(),JSON.stringify(S.goal));render();
+  },
+  goalclear:()=>{S.goal=null;ls.set('cc:goal:'+S.user.toLowerCase(),'');render()},
+  drcolor:d=>{S.drSel.color=d.c;render()},
+  dstart:()=>{drillStart();render()},
+  dquit:()=>{S.ot=null;render()},
+  dhint:()=>{S.ot.hint=true;render()},
+  dretry:()=>{Object.assign(S.ot,{state:'ask',sel:null,targets:[],last:null,msg:''});render()},
+  dreveal:()=>{const o=S.ot;if(!o.counted){o.counted=true;o.n++;cardUpdate(`op|${o.key}|${posKey(o.chess.fen())}`,false)}o.state='reveal';o.last=null;render()},
+  dnext:()=>{const o=S.ot,m=o.theory[0];o.chess.move(m.san);o.last=[m.from,m.to];drillName(o);
+    if(o.n>=14)drillEnd(o);else drillAdvance();render()},
+});
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){

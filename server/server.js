@@ -85,6 +85,15 @@ async function doSync(name, months, force) {
     urls.sort((a, b) => d.games[b].end_time - d.games[a].end_time);
     for (const u of urls.slice(MAX_GAMES)) { delete d.games[u]; delete d.an[u]; }
   }
+  // current ratings per time control (for the rating goal): best effort, never blocks the game sync
+  try {
+    const st = await cj(`https://api.chess.com/pub/player/${encodeURIComponent(name)}/stats`), out = {};
+    for (const k of ['chess_rapid', 'chess_blitz', 'chess_bullet', 'chess_daily']) {
+      const s = st[k]; if (!s || !s.last) continue;
+      out[k.slice(6)] = { rating: s.last.rating, best: s.best && s.best.rating, w: s.record && s.record.win, l: s.record && s.record.loss, d: s.record && s.record.draw };
+    }
+    d.stats = out;
+  } catch (e) { /* keep the previous stats */ }
   d.lastSync = Date.now(); d.months = failed ? 0 : months;
   if (Object.keys(d.games).length) persist(d);
 }
@@ -153,12 +162,15 @@ async function analyseGame(game) {
 const queues = new Map();   // name -> [game urls] still to analyse
 const order = [];           // round-robin order of names
 let current = null, running = false, queued = 0;
+// An analysis is "current" if it is at least as deep as ours and carries the second-best line
+// (needed to spot "great" moves). Older or shallower analysis gets redone by the server's own engine.
+const isCurrent = a => !!a && a.depth >= DEPTH && a.p.some(e => e.c2 !== undefined || e.m2 !== undefined);
 function enqueue(name) {
   const d = load(name);
   const q = queues.get(name) || [];
   const urls = Object.values(d.games).sort((a, b) => b.end_time - a.end_time).slice(0, ANALYSE_LATEST).map(g => g.url);
   for (const u of urls) {
-    if (d.an[u] || q.includes(u) || (current && current.url === u)) continue;
+    if (isCurrent(d.an[u]) || q.includes(u) || (current && current.url === u)) continue;
     if (queued >= QUEUE_MAX) break;
     q.push(u); queued++;
   }
@@ -174,7 +186,7 @@ async function kick() {
       const url = q.shift(); queued--;
       if (q.length) order.push(name); else queues.delete(name);
       const d = load(name), g = d.games[url];
-      if (!g || d.an[url]) continue;
+      if (!g || isCurrent(d.an[url])) continue;
       current = { name, url };
       try {
         const p = await analyseGame(g);
@@ -193,7 +205,7 @@ async function kick() {
 // How far the server is with this user's newest games (what the page shows as a progress line).
 function progress(d) {
   const urls = Object.values(d.games).sort((a, b) => b.end_time - a.end_time).slice(0, ANALYSE_LATEST).map(g => g.url);
-  const done = urls.filter(u => d.an[u]).length;
+  const done = urls.filter(u => isCurrent(d.an[u])).length;
   return { target: urls.length, done, pending: urls.length - done };
 }
 
@@ -283,7 +295,7 @@ async function handle(req, res) {
     const games = [], analyses = {};
     for (const g of Object.values(d.games)) if (g.seq > since) { const { seq, ...rest } = g; games.push(rest); }
     for (const [u, a] of Object.entries(d.an)) if (a.seq > since) analyses[u] = { depth: a.depth, p: a.p };
-    return send(res, 200, { name, seq: d.seq, total: Object.keys(d.games).length, games, analyses, progress: progress(d), checked: d.lastSync, warn });
+    return send(res, 200, { name, seq: d.seq, total: Object.keys(d.games).length, games, analyses, progress: progress(d), checked: d.lastSync, stats: d.stats || null, warn });
   }
 
   if (req.method === 'DELETE') {

@@ -4,6 +4,9 @@ A free, browser-only chess game reviewer for your [chess.com](https://www.chess.
 Enter your username, load your games, and let Stockfish show you what went wrong.
 
 - **Game review (Stockfish 18)**: every move labelled like chess.com's Game Review: Brilliant, Great, Best, Excellent, Good, Theory (opening book), Inaccuracy, Miss, Mistake, Blunder. Accuracy %, eval graph, a summary table per player, the engine's best line, hung pieces / missed captures / missed mates, and where you left opening theory (with the theory moves).
+- **Rating goal**: pick a time control and a target rating; progress bar, rating history with the target line, pace and ETA, and a personal plan of what to work on.
+- **Opening drills**: learn real opening theory move by move (London System, Italian Game, Sicilian, French, Caro-Kann, Queen's Gambit and about 30 more, with variations) with spaced repetition.
+- **Analytics**: results by colour, time control, opponent strength, time of day and weekday; how you win and lose; streaks and tilt; time management from the clocks; accuracy trends; mistake patterns by move number and piece; conversion and resilience.
 - **Openings explorer**: click through the lines you actually play, with your win/draw/loss score.
 - **Insights**: your weakest phase of the game, recurring opening mistakes, openings that cost you the most.
 - **Train your mistakes**: puzzles built from your own blunders, with spaced repetition (a position you solve returns after 1, 3, 7, 21, 60 days; one you miss returns soon).
