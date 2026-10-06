@@ -210,28 +210,45 @@ async function loadUser(name,sync){
   render();
   if(sync)await syncGames();
 }
+// Reads a chess.com answer as text first, so a non-JSON reply (blocked, rate-limited, cut off)
+// gives a readable message instead of the browser's cryptic JSON error.
+async function getJson(url){
+  const r=await fetch(url),txt=await r.text();
+  if(r.status===404)throw new Error('not found');
+  if(!r.ok)throw new Error(`chess.com answered HTTP ${r.status}`);
+  try{return JSON.parse(txt)}
+  catch(e){throw new Error(`chess.com sent an unexpected answer (HTTP ${r.status}, ${txt.length} bytes: "${txt.slice(0,50).replace(/\s+/g,' ')}")`)}
+}
+function showErr(where,e){
+  const msg=(e&&e.name&&e.name!=='Error'?e.name+': ':'')+((e&&e.message)||e);
+  setStatus(`⚠ ${where}: ${msg}`);console.error(where,e);
+}
 async function syncGames(){
-  const user=S.user;
+  const user=S.user;let stage='checking chess.com';
   setStatus('Checking chess.com for new games…');
   try{
-    const ar=await fetch(`https://api.chess.com/pub/player/${encodeURIComponent(user.toLowerCase())}/games/archives`);
-    if(!ar.ok)throw new Error(ar.status===404?`chess.com user "${user}" not found`:'chess.com error '+ar.status);
-    const all=(await ar.json()).archives,latest=all[all.length-1];
+    let all;
+    try{all=(await getJson(`https://api.chess.com/pub/player/${encodeURIComponent(user.toLowerCase())}/games/archives`)).archives}
+    catch(e){throw new Error(e.message==='not found'?`chess.com user "${user}" not found`:e.message)}
+    const latest=all[all.length-1];
     const want=all.slice(-(+$('#months').value)).reverse();
-    let added=0;
+    let added=0,failed=0,skipped=0;
     for(const [i,url] of want.entries()){
       if(S.meta.synced.includes(url)&&url!==latest)continue; // a finished month never changes
-      setStatus(`Loading month ${i+1}/${want.length}…`);
-      const r=await fetch(url);if(!r.ok)continue;
-      for(const raw of (await r.json()).games)if(ingest(raw,true))added++;
+      stage=`loading month ${i+1} of ${want.length}`;setStatus(`Loading month ${i+1}/${want.length}…`);
+      let data;try{data=await getJson(url)}catch(e){failed++;continue}
+      stage=`reading games of month ${i+1}`;
+      for(const raw of data.games){
+        try{if(ingest(raw,true))added++}catch(e){skipped++} // one odd game must not stop the rest
+      }
       if(url!==latest&&!S.meta.synced.includes(url))S.meta.synced.push(url);
       if(S.user!==user)return; // user switched meanwhile
     }
-    sortGames();
+    stage='saving';sortGames();
     save(K('games'),S.stored);save(K('meta'),S.meta);
-    setStatus(`${S.games.length} games${added?` (${added} new)`:''}`);
-  }catch(e){setStatus('⚠ '+e.message+(S.games.length?' — showing saved games':''))}
-  render();
+    setStatus(`${S.games.length} games${added?` (${added} new)`:''}${failed?` · ${failed} month(s) could not be loaded, press Load games to retry`:''}${skipped?` · ${skipped} unreadable game(s) skipped`:''}`);
+  }catch(e){showErr(stage,e);if(S.games.length)$('#status').textContent+=' — showing saved games'}
+  try{render()}catch(e){showErr('showing the page',e)}
 }
 
 /* ---------- import your own games (PGN) ---------- */
@@ -666,16 +683,19 @@ function insightsView(){
 async function runAnalysis(list){
   if(S.busy||!list.length)return;
   S.busy=true;S.stop=false;render();
-  let done=0;
-  for(const g of list){
-    const ok=await analyzeGame(g,(k,n)=>{
-      S.prog=((done+k/n)/list.length)*100;
-      const b=$('#pbar');if(b)b.style.width=S.prog+'%';
-      const t=$('#ptxt');if(t)t.textContent=`Game ${done+1}/${list.length} · position ${k}/${n}`;
-    });
-    if(!ok)break;done++;
-  }
+  let done=0,err=null;
+  try{
+    for(const g of list){
+      const ok=await analyzeGame(g,(k,n)=>{
+        S.prog=((done+k/n)/list.length)*100;
+        const b=$('#pbar');if(b)b.style.width=S.prog+'%';
+        const t=$('#ptxt');if(t)t.textContent=`Game ${done+1}/${list.length} · position ${k}/${n}`;
+      });
+      if(!ok)break;done++;
+    }
+  }catch(e){err=e}
   S.busy=false;S.prog=null;render();
+  if(err)showErr('analysing games',err);
 }
 const actions={
   open:d=>{S.sel=+d.i;S.cur=d.k?+d.k:0;S.flip=false;S.tab='games';render();scrollTo(0,0)},
@@ -722,7 +742,9 @@ document.addEventListener('click',e=>{
 document.addEventListener('change',e=>{
   if(e.target.id==='depth')S.depth=+e.target.value;
   if(e.target.id==='pgnFile'&&e.target.files[0]){
-    e.target.files[0].text().then(txt=>{S.pgnDraft=txt;const ta=$('#pgnText');if(ta)ta.value=txt});
+    const fr=new FileReader(); // FileReader works on older iPhones where Blob.text() does not
+    fr.onload=()=>{S.pgnDraft=String(fr.result);const ta=$('#pgnText');if(ta)ta.value=S.pgnDraft};
+    fr.readAsText(e.target.files[0]);
   }
 });
 document.addEventListener('input',e=>{if(e.target.id==='pgnText')S.pgnDraft=e.target.value});
@@ -733,13 +755,16 @@ document.addEventListener('keydown',e=>{
   }
   if(e.key==='Enter'&&e.target.id==='user')loadUser($('#user').value,true);
 });
-$('#load').onclick=()=>loadUser($('#user').value,true);
+$('#load').onclick=()=>loadUser($('#user').value,true).catch(e=>showErr('loading',e));
+// Anything unexpected is shown on screen (and in the console) instead of failing silently.
+addEventListener('error',ev=>showErr('unexpected error',ev.error||ev.message));
+addEventListener('unhandledrejection',ev=>showErr('unexpected error',ev.reason));
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
   const m=ls.get('cc:months');if(m)$('#months').value=m;
   const u=ls.get('cc:user');
-  if(u){$('#user').value=u;loadUser(u,true)}else render();
+  if(u){$('#user').value=u;loadUser(u,true).catch(e=>showErr('loading',e))}else render();
 })();
 </script>
 </body>
