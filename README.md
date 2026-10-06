@@ -27,3 +27,11 @@ Then open <http://localhost:8000/>. To deploy, upload `index.html` and the `engi
 ## Licence
 
 GPL-3.0, see [LICENSE](LICENSE). The `engine/` folder contains [Stockfish.js](https://github.com/nmrugg/stockfish.js) (Stockfish 18, GPLv3) by Chess.com, LLC and the Stockfish developers. Piece images are loaded from the [lichess](https://github.com/lichess-org/lila) cburnett set; chess logic uses [chess.js](https://github.com/jhlywa/chess.js).
+
+## Server (optional)
+
+`server/server.js` is a small dependency-free Node service that keeps a public cache of each chess.com
+username's games and their engine analysis (one JSON file per user, no accounts, no passwords), so the page
+loads fast and analysis done once is shared. It also fetches from chess.com server-side. Without it the page
+falls back to asking chess.com directly. See `deploy/` for a hardened systemd unit and the nginx snippet.
+Only public data is stored; imported PGNs and training progress stay in the visitor's browser.

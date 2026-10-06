@@ -1,0 +1,22 @@
+[Unit]
+Description=ChessCoach API (public cache of chess.com games and engine analysis)
+After=network.target
+
+[Service]
+User=chesscoach
+Group=chesscoach
+WorkingDirectory=/opt/chesscoach
+ExecStart=/usr/bin/node /opt/chesscoach/server.js
+Environment=PORT=3011 HOST=127.0.0.1 DATA_DIR=/var/lib/chesscoach
+Restart=on-failure
+RestartSec=3
+# contain it: it must never be able to hurt the other sites on this server
+MemoryMax=300M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/chesscoach
+
+[Install]
+WantedBy=multi-user.target

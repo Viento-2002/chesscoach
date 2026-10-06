@@ -155,15 +155,39 @@ function openingName(head){
   if(head.ECOUrl){const n=(head.ECOUrl.split('/openings/')[1]||'').replace(/(\.\.\.|-)\d+\..*$/,'').replace(/-/g,' ');if(n)return n}
   return head.Opening||head.ECO||'Unknown';
 }
+// Loading hundreds of games must be fast, so a game is first read with cheap string handling:
+// headers and the list of SAN moves. The slow chess.js work (full move objects and a FEN for every
+// position) happens lazily, only for games that are opened, analysed or trained on.
+function headersOf(pgn){
+  const h={},re=/^\[(\w+)\s+"((?:[^"\\]|\\.)*)"\]/gm;let m;
+  while((m=re.exec(pgn)))h[m[1]]=m[2].replace(/\\(["\\])/g,'$1');
+  return h;
+}
+function sansOf(pgn){
+  let s=pgn.replace(/^\[.*\]\s*$/gm,' ').replace(/\{[^}]*\}/g,' ').replace(/;[^\n]*/g,' '),prev;
+  do{prev=s;s=s.replace(/\([^()]*\)/g,' ')}while(s!==prev); // drop variations
+  return s.split(/\s+/).map(t=>t.replace(/^\d+\.(\.\.)?/,'').replace(/[!?]+$/,''))
+    .filter(t=>t&&!/^(1-0|0-1|1\/2-1\/2|\*|\$\d+)$/.test(t));
+}
+function ensure(g){ // full chess.js parse, once per game, on demand
+  if(g._ok!==undefined)return g._ok;
+  try{
+    const c=new Chess();if(!c.load_pgn(g.pgn))throw new Error('unreadable');
+    const moves=c.history({verbose:true}),r=new Chess(),fens=[r.fen()];
+    for(const m of moves){r.move(m.san);fens.push(r.fen())}
+    g._moves=moves;g._fens=fens;g._ok=true;
+  }catch(e){g._moves=[];g._fens=[new Chess().fen()];g._ok=false}
+  return g._ok;
+}
 function build(pgn,metaFn){
-  const c=new Chess();if(!c.load_pgn(pgn))return null;
-  const head=c.header();if(head.FEN||head.SetUp==='1')return null;
-  const moves=c.history({verbose:true});if(!moves.length)return null;
+  const head=headersOf(pgn);
+  if(head.FEN||head.SetUp==='1'||/960|fischer/i.test(head.Variant||''))return null;
+  const sans=sansOf(pgn);if(!sans.length)return null;
   const meta=metaFn(head);if(!meta)return null;
-  const r=new Chess(),fens=[r.fen()];
-  for(const m of moves){r.move(m.san);fens.push(r.fen())}
   const opening=openingName(head);
-  return {...meta,myc:meta.me==='white'?'w':'b',opening,fam:family(opening),moves,sans:moves.map(m=>m.san),fens,p:null,rev:null};
+  const g={...meta,myc:meta.me==='white'?'w':'b',opening,fam:family(opening),sans,pgn,p:null,rev:null};
+  Object.defineProperties(g,{moves:{get(){ensure(this);return this._moves}},fens:{get(){ensure(this);return this._fens}}});
+  return g;
 }
 function parseRaw(raw,user){
   if(raw.imported){
@@ -199,18 +223,78 @@ const recent=()=>S.games.slice(0,MAX_ANALYSE);
 async function loadUser(name,sync){
   name=name.trim();if(!name)return;
   S.user=name;S.games=[];S.stored=[];S.byUrl=new Map();S.meta={synced:[]};S.train={};S.sel=null;S.tr=null;
+  const pending=[];
   ls.set('cc:user',name);ls.set('cc:months',$('#months').value);$('#user').value=name;
   try{
     const [games,meta,pm,tm]=await Promise.all([DB.get(K('games')),DB.get(K('meta')),DB.all(K('p')+'|'),DB.all(K('t')+'|')]);
     if(meta)S.meta=meta;
     (games||[]).forEach(raw=>ingest(raw,false));S.stored=games||[];
-    S.games.forEach(g=>{if(pm[g.url]){try{g.p=pm[g.url];g.rev=review(g)}catch(e){g.p=null}}});
+    S.games.forEach(g=>{if(pm[g.url]&&!attach(g,pm[g.url]))pending.push([g,pm[g.url]])});
     S.train=tm||{};
   }catch(e){}
   sortGames();
   setStatus(S.games.length?`${S.games.length} saved games`:'');
   render();
-  if(sync)await syncGames();
+  if(pending.length){await prepareAll(pending);setStatus(`${S.games.length} saved games`);render()}
+  if(sync&&!(await syncFromServer()))await syncGames(); // our server first; chess.com directly if it is unreachable
+}
+// A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
+const REV_V=2;
+function attach(g,val){ // fast path: the review was saved too, no chess.js work at all
+  const p=val&&(Array.isArray(val)?val:val.p),rev=val&&val.rev;
+  if(!p||p.length!==g.sans.length+1||!rev||rev.v!==REV_V)return false;
+  g.p=p;g.depth=val.depth;g.rev=rev;return true;
+}
+function prepare(g,val){ // slow path (older saves, or analysis fetched from the server): needs the full parse
+  try{
+    const p=Array.isArray(val)?val:val.p;
+    if(!p||p.length!==g.sans.length+1||!ensure(g)||p.length!==g.fens.length)return false;
+    g.p=p;g.depth=Array.isArray(val)?12:val.depth;g.rev=review(g);return true;
+  }catch(e){g.p=null;g.rev=null;return false}
+}
+async function prepareAll(items){ // in small chunks so the page stays responsive
+  let i=0;
+  for(const [g,val] of items){
+    if(prepare(g,val))save(K('p',g.url),{depth:g.depth,p:g.p,rev:g.rev});
+    if(++i%4===0){setStatus(`Preparing analysis ${i}/${items.length}…`);await new Promise(r=>setTimeout(r))}
+  }
+}
+const isChessCom=u=>/^https:\/\/www\.chess\.com\/game\//.test(u);
+const apiUrl=(what,name)=>`api/${what}/${encodeURIComponent(name.toLowerCase())}`;
+// ChessCoach's own server keeps each player's public games and shared engine analysis, so loading is fast.
+async function syncFromServer(){
+  const user=S.user;
+  setStatus('Loading games…');
+  let r,j;
+  try{
+    r=await fetch(`${apiUrl('profile',user)}?months=${$('#months').value}&since=${S.meta.since||0}`);
+    try{j=JSON.parse(await r.text())}catch(e){return false} // not our API (e.g. a plain file server)
+  }catch(e){return false}
+  if(S.user!==user)return true;
+  if(!r.ok){
+    if(r.status===404&&j.error&&/not found/.test(j.error)){setStatus(`⚠ chess.com user "${user}" not found`);return true}
+    return false; // server trouble or rate limit: ask chess.com directly instead
+  }
+  S.server=true;
+  let added=0;
+  for(const raw of j.games)try{if(ingest(raw,true))added++}catch(e){}
+  const shared=[];
+  for(const [url,a] of Object.entries(j.analyses||{})){const g=S.byUrl.get(url);if(g&&!g.p)shared.push([g,a])}
+  sortGames();setStatus(`${S.games.length} games`);try{render()}catch(e){}
+  if(shared.length)await prepareAll(shared);
+  const got=shared.filter(([g])=>g.rev).length;
+  S.meta.since=j.seq;
+  save(K('games'),S.stored);save(K('meta'),S.meta);
+  const n=S.games.filter(g=>g.rev).length;
+  setStatus(`${S.games.length} games · ${n} analysed${got?` (${got} shared from the server)`:''}${j.warn?' · '+j.warn:''}`);
+  try{render()}catch(e){showErr('showing the page',e)}
+  // give back: share analyses the server does not have yet (25 at a time)
+  S.games.filter(g=>g.p&&isChessCom(g.url)&&j.anIndex[g.url]==null).slice(0,25).reduce((p,g)=>p.then(()=>uploadAnalysis(g)),Promise.resolve());
+  return true;
+}
+async function uploadAnalysis(g){
+  if(!S.server||!g.p||!isChessCom(g.url))return;
+  try{await fetch(apiUrl('analysis',S.user),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:g.url,depth:g.depth||S.depth,p:g.p})})}catch(e){}
 }
 // Reads a chess.com answer as text first, so a non-JSON reply (blocked, rate-limited, cut off)
 // gives a readable message instead of the browser's cryptic JSON error.
@@ -309,6 +393,7 @@ async function evalPos(fen,depth){
   return {c:(r.v||0)*sg,m:null,b:r.best};
 }
 async function analyzeGame(g,onStep){
+  if(!ensure(g))throw new Error('this game could not be read');
   await getEngine();eng.send('ucinewgame');
   const p=[];
   for(let k=0;k<g.fens.length;k++){
@@ -316,8 +401,9 @@ async function analyzeGame(g,onStep){
     p.push(await evalPos(g.fens[k],S.depth));
     onStep&&onStep(k+1,g.fens.length);
   }
-  g.p=p;g.rev=review(g);
-  save(K('p',g.url),p);
+  g.p=p;g.depth=S.depth;g.rev=review(g);
+  save(K('p',g.url),{depth:S.depth,p,rev:g.rev});
+  uploadAnalysis(g); // share it, so the next visitor does not have to wait
   return true;
 }
 
@@ -344,10 +430,11 @@ function review(g){
       if(mm>0)tags.push({k:'missedmate',san:t&&t.san});
     }
     acc[c].push(Math.max(0,Math.min(100,103.1668*Math.exp(-0.04354*loss)-3.1669)));
-    moves.push({loss,cls,bestSan,tags,mover:c,i});
+    // san/uci/fen are kept so lists, insights and training never need the slow full parse of the game
+    moves.push({loss,cls,bestSan,tags,mover:c,i,san:m.san,uci:uci(m),fen:loss>=10?g.fens[i]:undefined});
   }
   const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
-  return {moves,acc:{w:avg(acc.w),b:avg(acc.b)},win:g.p.map(p=>winPct(cpOf(p)))};
+  return {v:REV_V,moves,acc:{w:avg(acc.w),b:avg(acc.b)},win:g.p.map(p=>winPct(cpOf(p)))};
 }
 function counts(g,color){
   const o={best:0,excellent:0,good:0,inaccuracy:0,mistake:0,blunder:0};
@@ -399,7 +486,7 @@ function welcomeView(){
   return `<div class="card"><h3>Welcome to ChessCoach</h3>
     <p>Type your chess.com username above and press <b>Load games</b>. ChessCoach then:</p>
     <ol><li>analyses your games with Stockfish, right in your browser,</li><li>shows what went wrong and which openings cost you points,</li><li>turns your mistakes into <b>training puzzles</b>.</ol>
-    <p class="mute hint">Your games and progress are saved in this browser, so next time just open the page. Playing elsewhere? You can also paste your own PGN files.</p></div>`;
+    <p class="mute hint">No password needed. Type any chess.com username (yours, a friend’s…) and ChessCoach’s server keeps that player’s <b>public</b> games and the engine analysis, so the page loads fast for everyone who looks the name up. Your own PGN imports and your training progress never leave your device.</p></div>`;
 }
 
 function gamesView(){
@@ -428,7 +515,7 @@ function gamesView(){
       <td class="mute hm">${g.rev?'Review ›':'Analyse ›'}</td></tr>`;
   });
   if(!S.games.length)h+='<tr><td colspan="7" class="mute">No games yet. Press <b>Load games</b>, or add a PGN above.</td></tr>';
-  h+=`</table></div><p class="mute hint">Saved in this browser for “${esc(S.user)}”. <a href="#" data-a="wipe" style="color:var(--mute)">Delete saved data</a></p>`;
+  h+=`</table></div><p class="mute hint">Public profile “${esc(S.user)}”: public chess.com games and their analysis are cached on the ChessCoach server${S.server?'':' (server not reachable right now: using this device only)'}. Imported PGNs and training progress stay on this device. <a href="#" data-a="wipe" style="color:var(--mute)">Delete my data</a></p>`;
   return h;
 }
 
@@ -510,8 +597,9 @@ function buildPuzzles(){
       if(m.mover!==g.myc||m.loss<10)return;
       const before=g.p[m.i];if(!before.b)return;
       if(winPct(povCp(before,m.mover))<15)return;
-      const key=posKey(g.fens[m.i]);
-      const o=map[key]=map[key]||{key,fen:g.fens[m.i],color:m.mover,best:before.b,bestSan:m.bestSan,before,g,i:m.i,n:0,loss:0,times:[]};
+      if(!m.fen)return;
+      const key=posKey(m.fen);
+      const o=map[key]=map[key]||{key,fen:m.fen,color:m.mover,best:before.b,bestSan:m.bestSan,playedSan:m.san,before,g,i:m.i,n:0,loss:0,times:[]};
       o.n++;o.loss=Math.max(o.loss,m.loss);o.times.push(g.time);
     });
   });
@@ -584,7 +672,7 @@ async function trainMove(from,to){
   const u=from+to+(mv.promotion||'');
   Object.assign(t,{sel:null,targets:[],last:[from,to],played:mv.san});
   if(u===p.best){updateProgress(p,true);t.state='right';t.msg=`Correct! <b>${mv.san}</b> is the best move.`;render();return}
-  const sameMistake=buildPuzzles().length&&p.g.moves[p.i].san===mv.san;
+  const sameMistake=p.playedSan===mv.san;
   if(sameMistake){updateProgress(p,false);t.state='wrong';t.msg=`<b>${mv.san}</b> is the move you played in the game — that was the mistake. Look for something else.`;render();return}
   if(S.busy){updateProgress(p,false);t.state='wrong';t.msg=`<b>${mv.san}</b> isn’t the engine’s choice. (Stop the running analysis to let Stockfish judge alternatives.)`;render();return}
   t.state='thinking';render();
@@ -649,7 +737,7 @@ function insightsView(){
       m.tags.forEach(t=>{if(t.k==='hung')hung++;if(t.k==='missedcap')mcap++;if(t.k==='missedmate')mmate++});
       if(m.i<20)(fl[g.fam]=fl[g.fam]||[]).push(m.loss);
       if(m.i<24&&m.loss>=10){
-        const key=posKey(g.fens[m.i])+'|'+uci(g.moves[m.i]);
+        const key=(m.fen?posKey(m.fen):g.url+m.i)+'|'+m.uci;
         const o=rep[key]=rep[key]||{n:0,g,m,loss:0};o.n++;o.loss+=m.loss;
       }
     });
@@ -673,7 +761,7 @@ function insightsView(){
   const reps=Object.values(rep).sort((a,b)=>b.n-a.n||b.loss-a.loss).slice(0,10);
   h+=`<div class="card tw"><h3>Opening mistakes to fix</h3><div class="mute hint" style="margin-bottom:6px">Moves 1–12 where you lost ≥10% win chance. Repeats (×2, ×3…) are the best things to study.</div><table><tr><th></th><th>Opening</th><th>You played</th><th>Better</th><th>Move</th></tr>`;
   reps.forEach(o=>{const i=o.m.i;
-    h+=`<tr class="click" data-a="open" data-i="${S.games.indexOf(o.g)}" data-k="${i+1}"><td>${o.n>1?'×'+o.n:''}</td><td>${esc(o.g.opening)}</td><td class="c-${o.m.cls}">${o.g.moves[i].san}</td><td class="c-best">${o.m.bestSan||'–'}</td><td class="mute">${Math.floor(i/2)+1}${i%2?'…':'.'}</td></tr>`});
+    h+=`<tr class="click" data-a="open" data-i="${S.games.indexOf(o.g)}" data-k="${i+1}"><td>${o.n>1?'×'+o.n:''}</td><td>${esc(o.g.opening)}</td><td class="c-${o.m.cls}">${o.m.san}</td><td class="c-best">${o.m.bestSan||'–'}</td><td class="mute">${Math.floor(i/2)+1}${i%2?'…':'.'}</td></tr>`});
   if(!reps.length)h+='<tr><td colspan="5" class="mute">No big opening mistakes — nice!</td></tr>';
   h+='</table></div>';
   const fls=Object.entries(fl).filter(([,v])=>v.length>=6).map(([k,v])=>[k,avg(v)]).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -716,7 +804,8 @@ const actions={
   ereset:()=>{S.expl=[];render()},
   toggleImport:()=>{S.showImport=!S.showImport;render()},
   importPgn:()=>{S.impMsg=importPgn($('#pgnText').value,$('#pgnSide').value);if(/^\d+ game/.test(S.impMsg)&&!/^0 game/.test(S.impMsg)){S.pgnDraft='';}render()},
-  wipe:()=>{if(confirm(`Delete all saved games, analysis and training progress for "${S.user}" from this browser?`)){
+  wipe:()=>{if(confirm(`Delete all saved games, analysis and training progress for "${S.user}" from this device, and remove the cached profile from the ChessCoach server?`)){
+    if(S.server)fetch(apiUrl('profile',S.user),{method:'DELETE'}).catch(()=>{});
     DB.wipe(S.user.toLowerCase()+'|').catch(()=>{}).then(()=>{ls.set('cc:user','');S.user='';S.games=[];S.stored=[];S.byUrl=new Map();S.train={};S.tr=null;S.sel=null;$('#user').value='';setStatus('');render()})}},
   gotrain:()=>{S.tab='train';render()},
   tstart:()=>{trainStart(false);render()},
