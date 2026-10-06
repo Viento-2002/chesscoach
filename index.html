@@ -122,7 +122,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
 
 const S={user:'',games:[],stored:[],byUrl:new Map(),meta:{synced:[]},train:{},tab:'games',sel:null,cur:0,flip:false,
-  expl:[],explColor:'white',depth:16,busy:false,stop:false,prog:null,tr:null,showImport:false,pgnDraft:'',impMsg:''};
+  expl:[],explColor:'white',depth:14,busy:false,stop:false,prog:null,tr:null,showImport:false,pgnDraft:'',impMsg:''};
 
 /* ---------- saved data (IndexedDB, per username) ---------- */
 const DB={
@@ -192,6 +192,8 @@ function ingest(raw,persist){
   S.games.push(g);S.byUrl.set(raw.url,g);return true;
 }
 const sortGames=()=>S.games.sort((a,b)=>b.time-a.time);
+const MAX_ANALYSE=100; // bulk analysis only covers the newest games; older ones can still be opened and analysed one by one
+const recent=()=>S.games.slice(0,MAX_ANALYSE);
 
 /* ---------- load saved data, then sync with chess.com ---------- */
 async function loadUser(name,sync){
@@ -401,13 +403,13 @@ function welcomeView(){
 }
 
 function gamesView(){
-  const todo=S.games.filter(g=>!g.p).length;
+  const todo=recent().filter(g=>!g.p).length;
   let h=`<div class="card"><div class="ctl">
-    <label class="mute">Engine depth <select id="depth">${[12,16,18,20].map(d=>`<option ${d===S.depth?'selected':''}>${d}</option>`).join('')}</select></label>
-    <button class="primary" data-a="analyzeAll" ${S.busy||!todo?'disabled':''}>Analyse all ${todo} new games</button>
+    <label class="mute">Engine depth <select id="depth">${[12,14,16,18].map(d=>`<option ${d===S.depth?'selected':''}>${d}</option>`).join('')}</select></label>
+    <button class="primary" data-a="analyzeAll" ${S.busy||!todo?'disabled':''}>Analyse ${todo} of your last ${Math.min(S.games.length,MAX_ANALYSE)} games</button>
     <button data-a="analyze10" ${S.busy||!todo?'disabled':''}>Next 10</button>
     ${S.busy?'<button data-a="stop">Stop</button>':''}
-    </div><div class="mute hint">Depth 16 takes roughly 30–90 s per game. Results are saved in your browser, so each game is only analysed once.</div>
+    </div><div class="mute hint">Analyses your ${MAX_ANALYSE} most recent games, roughly 20–60 s each at depth 14 (lower depth = faster). Results are saved in your browser, so each game is only analysed once. Older games: open one and press “Analyse this game”.</div>
     <div class="progress"><i id="pbar" style="width:${S.prog||0}%"></i></div><div id="ptxt" class="mute hint"></div></div>`;
   h+=`<div class="card"><div class="ctl" style="margin:0"><b>Add your own games</b><button data-a="toggleImport" style="margin-left:auto">${S.showImport?'Hide':'Paste / upload PGN'}</button></div>`;
   if(S.showImport)h+=`<p class="mute hint">Games from chess.com, lichess, over the board… anything in PGN format. Several games in one file is fine.</p>
@@ -704,8 +706,8 @@ const actions={
   nav:d=>{const g=S.games[S.sel];S.cur=Math.max(0,Math.min(g.moves.length,+d.k));render()},
   graph:(d,e)=>{const g=S.games[S.sel],r=$('#gsvg').getBoundingClientRect();
     S.cur=Math.max(0,Math.min(g.moves.length,Math.round((e.clientX-r.left)/r.width*g.moves.length)));render()},
-  analyzeAll:()=>runAnalysis(S.games.filter(g=>!g.p)),
-  analyze10:()=>runAnalysis(S.games.filter(g=>!g.p).slice(0,10)),
+  analyzeAll:()=>runAnalysis(recent().filter(g=>!g.p)),
+  analyze10:()=>runAnalysis(recent().filter(g=>!g.p).slice(0,10)),
   analyzeOne:()=>runAnalysis([S.games[S.sel]]),
   stop:()=>{S.stop=true},
   ecol:d=>{S.explColor=d.c;S.expl=[];render()},
