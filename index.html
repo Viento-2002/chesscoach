@@ -1189,6 +1189,7 @@ const actions={
   tquit:()=>{S.tr=null;render()},
   tsq:d=>{
     if(S.ex){exTap(d.sq);return}
+    if(S.trainMode==='rush'&&S.rs){rushTap(d.sq);return}
     if(S.trainMode==='play'){if(S.pl)plTap(d.sq);else dpTap(d.sq);return}
     if(S.trainMode==='vision'&&S.vis){visTap(d.sq);return}
     if(S.trainMode==='openings'&&S.ot){drillTap(d.sq);return}
@@ -1476,8 +1477,8 @@ function goalView(){
 function trainView(pz){
   const m=S.trainMode;
   const tab=(k,l)=>`<button class="${m===k?'on':''}" data-a="tmode" data-m="${k}">${l}</button>`;
-  return streakBanner()+`<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}${tab('play','Play')}${tab('vision','Vision')}</div>`
-    +(m==='openings'?drillView():m==='endgames'?egView():m==='vision'?visView():m==='play'?plView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
+  return streakBanner()+`<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}${tab('rush','Rush')}${tab('play','Play')}${tab('vision','Vision')}</div>`
+    +(m==='openings'?drillView():m==='endgames'?egView():m==='vision'?visView():m==='play'?plView():m==='rush'?rushView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
 }
 function famSet(label,variation){
   if(!BOOK||!BOOK.f[label])return null;
@@ -2736,6 +2737,64 @@ function calendarCard(){
   return `<div class="card"><h3>Training calendar</h3><div class="mute hint" style="margin-bottom:8px">${days} training day${days===1?'':'s'} in the last 20 weeks · ${total} exercise${total===1?'':'s'}</div>
     <div style="display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,auto);grid-template-columns:repeat(20,1fr);gap:3px;width:100%">${cells}</div></div>`;
 }
+
+/* ======================================================================
+   Puzzle Rush: three minutes, three strikes, puzzles from your own mistakes
+   ====================================================================== */
+S.rs=null;
+const RUSH_SECONDS=180,RUSH_STRIKES=3;
+const rushBest=()=>+(ls.get('cc:rush:'+S.user)||0);
+function rushStart(){
+  const pool=buildPuzzles();
+  if(pool.length<3){S.rs={err:'You need at least 3 mistakes from analysed games to play Puzzle Rush. Analyse more games first.'};render();return}
+  for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]]}
+  clearInterval(S.rsT);
+  S.rs={state:'run',pool,i:0,score:0,strikes:0,end:Date.now()+RUSH_SECONDS*1000,sel:null,targets:[],marks:[],best:rushBest(),fb:false};
+  S.rsT=setInterval(rushTick,250);render();
+}
+function rushTick(){
+  const r=S.rs;if(!r||r.state!=='run'){clearInterval(S.rsT);return}
+  const el=$('#rsTime');if(el){const s=Math.max(0,Math.ceil((r.end-Date.now())/1000));el.textContent=Math.floor(s/60)+':'+pad2(s%60)}
+  if(Date.now()>=r.end)rushEnd();
+}
+function rushEnd(){
+  const r=S.rs;if(!r||r.state==='done')return;
+  clearInterval(S.rsT);r.state='done';r.newBest=r.score>r.best;
+  if(r.newBest)ls.set('cc:rush:'+S.user,String(r.score));
+  if(r.score>0)logTrain('rush',true);
+  snd(r.newBest?'win':'good');render();
+}
+function rushTap(sq){
+  const r=S.rs;if(!r||r.state!=='run'||r.fb)return;
+  const p=r.pool[r.i%r.pool.length],c=new Chess(p.fen),pc=c.get(sq);
+  if(r.sel&&r.targets.includes(sq)){
+    const from=r.sel,ok=from+sq===p.best.slice(0,4);r.sel=null;r.targets=[];
+    if(ok){r.score++;snd('good');r.i++;r.marks=[];render();return}
+    r.strikes++;snd('bad');r.fb=true;
+    r.marks=[{sq:p.best.slice(2,4),cls:'ok'},{sq,cls:'no'}];render();
+    setTimeout(()=>{if(S.rs!==r)return;r.fb=false;r.marks=[];r.i++;if(r.strikes>=RUSH_STRIKES)rushEnd();else render()},900);
+    return;
+  }
+  if(pc&&pc.color===c.turn()){r.sel=sq;r.targets=c.moves({square:sq,verbose:true}).map(m=>m.to)}else{r.sel=null;r.targets=[]}
+  render();
+}
+function rushView(){
+  const r=S.rs;
+  if(!r||r.err)return `<div class="card"><h3>⚡ Puzzle Rush</h3><p class="mute" style="margin-top:0">${r&&r.err?esc(r.err):`Solve as many puzzles from your own mistakes as you can in ${RUSH_SECONDS/60} minutes. Three wrong moves and it is over. Your best: <b>${rushBest()}</b>.`}</p>
+    <div class="pz-actions"><button class="primary" data-a="rushstart">Start</button></div></div>`;
+  if(r.state==='done')return `<div class="card"><h3>${r.newBest?'🏆 New best!':'Rush over'}</h3><div class="cards" style="margin:0"><div class="stat"><div class="mute">Solved</div><div class="big">${r.score}</div></div>
+    <div class="stat"><div class="mute">Best</div><div class="big">${Math.max(r.best,r.score)}</div></div></div>
+    <div class="pz-actions"><button class="primary" data-a="rushstart">Play again</button><button data-a="rushquit">Back</button></div></div>`;
+  const p=r.pool[r.i%r.pool.length],left=Math.max(0,Math.ceil((r.end-Date.now())/1000));
+  return `<div class="card" style="display:flex;align-items:center;gap:14px"><div style="flex:1"><div class="mute hint">${p.color==='w'?'White':'Black'} to move</div><div class="big">${'❌'.repeat(r.strikes)}${'▫️'.repeat(RUSH_STRIKES-r.strikes)}</div></div>
+    <div style="text-align:center"><div class="mute hint">Time</div><div class="big" id="rsTime">${Math.floor(left/60)}:${pad2(left%60)}</div></div><div style="text-align:center"><div class="mute hint">Solved</div><div class="big">${r.score}</div></div></div>
+    <div class="boardwrap">${boardHTML(p.fen,p.color==='b',null,null,{click:true,sel:r.sel,targets:r.targets,marks:r.marks})}</div>
+    <div style="margin-top:10px"><a href="#" data-a="rushquit" class="mute hint">Stop</a></div>`;
+}
+Object.assign(actions,{
+  rushstart:()=>rushStart(),
+  rushquit:()=>{clearInterval(S.rsT);S.rs=null;render()},
+});
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){

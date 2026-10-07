@@ -21,6 +21,7 @@ Pick the site, enter your username, load your games, and let Stockfish show you 
 - **Play Stockfish**: a full game against the engine at Beginner (1350) to Maximum strength, as White, Black or random, with take-back, resign, PGN download and a one-tap analysis of the final position.
 - **Daily puzzle**: today's puzzle from chess.com (and random ones), with hint and answer; counts for your streak.
 - **Training calendar**: a 20-week heatmap of the days you trained, under Progress.
+- **Puzzle Rush**: three minutes and three strikes of puzzles from your own mistakes, with a saved best score.
 - **Opening drills**: learn real opening theory move by move (London System, Italian Game, Sicilian, French, Caro-Kann, Queen's Gambit and about 30 more, with variations) with spaced repetition.
 - **Analytics**: results by colour, time control, opponent strength, time of day and weekday; how you win and lose; streaks and tilt; time management from the clocks; accuracy trends; mistake patterns by move number and piece; conversion and resilience.
 - **Openings explorer**: click through the lines you actually play, with your win/draw/loss score.
