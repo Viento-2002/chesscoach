@@ -8,7 +8,8 @@ Enter your username, load your games, and let Stockfish show you what went wrong
 - **Weekly progress**: this week against the same days last week (games, win rate, rating change, accuracy, serious mistakes per 100 moves), highlights, your top mistake types with a tip, training activity and streak, a focus list, an 8-week trend, and a copyable summary.
 - **Rating goal**: pick a time control and a target rating; progress bar, rating history with the target line, pace and ETA, and a personal plan of what to work on.
 - **Tactics by theme**: the tactics you missed in your own games, recognised (checkmate, forks, pins and skewers, discovered attacks, free material, defence, promotion, safety) and grouped, so you can train one pattern at a time; each solved puzzle explains why the move works.
-- **Endgame drills**: play basic endgames against Stockfish with fresh random positions every time (KQ, KR and two-rook mates, king and pawn vs king as attacker or defender, the Lucena and Philidor positions). Stockfish judges each move, explains what a spoiled win or draw cost, and lets you take it back.
+- **Daily reminder + streak**: one gentle push notification a day at a time you choose, only if you have not trained yet, with your streak and the puzzles waiting. Works as an installed home-screen app (needed on iPhone), on Android and on desktop browsers. The server sends it with Web Push and is told only your last training day, streak and puzzles due.
+- **Endgame drills**: play basic endgames against Stockfish with fresh random positions every time (KQ, KR, bishop and knight and two-rook mates, queen vs a pawn on the 7th, king and pawn vs king as attacker or defender, the Lucena and Philidor positions). Stockfish judges each move, explains what a spoiled win or draw cost, and lets you take it back.
 - **Opening drills**: learn real opening theory move by move (London System, Italian Game, Sicilian, French, Caro-Kann, Queen's Gambit and about 30 more, with variations) with spaced repetition.
 - **Analytics**: results by colour, time control, opponent strength, time of day and weekday; how you win and lose; streaks and tilt; time management from the clocks; accuracy trends; mistake patterns by move number and piece; conversion and resilience.
 - **Openings explorer**: click through the lines you actually play, with your win/draw/loss score.
@@ -52,3 +53,12 @@ visitor's browser.
 
 Opening theory comes from [lichess chess-openings](https://github.com/lichess-org/chess-openings) (CC0); regenerate
 `book.json` with `node tools/build-book.js`.
+
+### Reminders (Web Push)
+
+`web-push` is the only dependency (`cd server && npm ci --omit=dev`). On first start the server creates a VAPID key
+pair in `DATA_DIR/vapid.json` (mode 600, never commit it). Subscriptions are only accepted from the real browser
+push services (an allow-list, so the server cannot be pointed at arbitrary addresses) and are stored in
+`DATA_DIR/push.json`. Add this to the nginx site so the manifest has the right type:
+
+    location = /manifest.webmanifest { default_type application/manifest+json; add_header Cache-Control "no-cache" always; }

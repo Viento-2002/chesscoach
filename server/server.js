@@ -245,6 +245,114 @@ function limited(ip, key, max, windowMs) {
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of buckets) if (!v.length || now - v[v.length - 1] > 3600e3) buckets.delete(k); }, 600e3).unref();
 
+/* ---------- daily training reminders (Web Push) ----------
+   A browser that wants reminders registers its push subscription here together with the hour it prefers and a
+   tiny training status (last day trained, streak, puzzles due). Once a day, at the chosen local time, the server
+   sends a notification unless that person already trained today. The VAPID key pair is created on first start and
+   stays in DATA_DIR (never in the repository). Only the real browser push services are ever contacted. */
+let webpush = null;
+try { webpush = require('web-push'); } catch (e) { console.warn('web-push is not installed: reminders are disabled'); }
+const PUSH_FILE = path.join(DATA, 'push.json'), VAPID_FILE = path.join(DATA, 'vapid.json'), PUSH_DRY = !!process.env.PUSH_DRYRUN;
+let vapid = null;
+if (webpush) {
+  try { vapid = JSON.parse(fs.readFileSync(VAPID_FILE, 'utf8')); }
+  catch (e) { vapid = webpush.generateVAPIDKeys(); fs.writeFileSync(VAPID_FILE, JSON.stringify(vapid), { mode: 0o600 }); }
+  webpush.setVapidDetails('https://chess.vrhconsultancy.nl', vapid.publicKey, vapid.privateKey);
+}
+let subs = {};
+try { subs = JSON.parse(fs.readFileSync(PUSH_FILE, 'utf8')); } catch (e) { /* none yet */ }
+const saveSubs = () => { try { fs.writeFileSync(PUSH_FILE + '.tmp', JSON.stringify(subs)); fs.renameSync(PUSH_FILE + '.tmp', PUSH_FILE); } catch (e) { console.error('push save', e.message); } };
+// Allow-list: stops the server from being used to send requests to arbitrary addresses.
+const PUSH_HOST = /^(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|web\.push\.apple\.com|[a-z0-9-]+\.push\.apple\.com|[a-z0-9.-]+\.notify\.windows\.com)$/;
+const subId = ep => require('crypto').createHash('sha256').update(ep).digest('base64url').slice(0, 22);
+const isoDay = d => d.toISOString().slice(0, 10);
+const validSub = s => {
+  if (!s || typeof s.endpoint !== 'string' || s.endpoint.length > 600) return false;
+  let u; try { u = new URL(s.endpoint); } catch (e) { return false; }
+  if (u.protocol !== 'https:' || !PUSH_HOST.test(u.hostname)) return false;
+  const k = s.keys; return !!k && typeof k.p256dh === 'string' && typeof k.auth === 'string' && k.p256dh.length < 200 && k.auth.length < 100;
+};
+const cleanState = st => ({
+  lastTrain: st && /^\d{4}-\d{2}-\d{2}$/.test(st.lastTrain) ? st.lastTrain : null,
+  streak: Math.max(0, Math.min(9999, parseInt(st && st.streak) || 0)),
+  due: Math.max(0, Math.min(99999, parseInt(st && st.due) || 0))
+});
+// A reminder time that has already passed today starts tomorrow, instead of firing the moment it is set.
+const skipTodayIfPassed = rec => {
+  const local = new Date(Date.now() + rec.tz * 60000), mins = local.getUTCHours() * 60 + local.getUTCMinutes();
+  rec.sentDay = mins >= rec.hour * 60 + rec.min ? isoDay(local) : null;
+};
+const intIn = (v, lo, hi, d) => { const n = parseInt(v); return Number.isInteger(n) && n >= lo && n <= hi ? n : d; };
+function reminderText(rec) {
+  const st = rec.state || {};
+  if (st.streak > 0) return { title: `🔥 Keep your ${st.streak}-day streak`, body: st.due ? `${st.due} puzzles from your own games are waiting. Ten minutes is enough.` : 'Ten minutes of training keeps it alive.' };
+  if (st.due > 0) return { title: 'Time to train ♞', body: `${st.due} puzzles from your own mistakes are waiting.` };
+  return { title: 'ChessCoach', body: 'Ten minutes of chess training today?' };
+}
+async function sendPush(rec, payload) {
+  if (PUSH_DRY) { console.log('PUSH(dry)', rec.id, JSON.stringify(payload)); return { ok: true }; }
+  try { await webpush.sendNotification(rec.sub, JSON.stringify(payload), { TTL: 6 * 3600 }); return { ok: true }; }
+  catch (e) { console.error(new Date().toISOString(), 'push failed', rec.id, e.statusCode || e.message); return { ok: false, gone: e.statusCode === 404 || e.statusCode === 410 }; }
+}
+async function reminderTick() {
+  const now = Date.now();
+  for (const rec of Object.values(subs)) {
+    const local = new Date(now + rec.tz * 60000), day = isoDay(local);
+    const mins = local.getUTCHours() * 60 + local.getUTCMinutes(), at = rec.hour * 60 + rec.min;
+    if (rec.sentDay === day || mins < at || mins >= at + 180) continue;   // once a day, within 3 hours after the chosen time
+    if (rec.state && rec.state.lastTrain === day) continue;                // already trained today
+    if (now - (rec.updated || 0) > 14 * 864e5) continue;                   // not opened for two weeks: stop reminding
+    rec.sentDay = day; saveSubs();
+    const r = await sendPush(rec, { ...reminderText(rec), tag: 'daily-' + day, url: './' });
+    if (r.gone) { delete subs[rec.id]; saveSubs(); }
+  }
+}
+if (webpush) setInterval(() => reminderTick().catch(e => console.error('reminder', e.message)), +process.env.REMIND_EVERY || 60e3);
+const MAX_BODY = 16 * 1024;
+const readBody = req => new Promise((resolve, reject) => {
+  let n = 0; const chunks = [];
+  req.on('data', c => { n += c.length; if (n > MAX_BODY) { reject(Object.assign(new Error('too large'), { code: 413 })); req.destroy(); } else chunks.push(c); });
+  req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+  req.on('error', reject);
+});
+async function handlePush(req, res, url, ip) {
+  if (!webpush) return send(res, 503, { error: 'reminders are not available on this server' });
+  const p = url.pathname;
+  if (req.method === 'GET' && p === '/api/push/key') return send(res, 200, { key: vapid.publicKey });
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (limited(ip, 'push', 60, 3600e3)) return send(res, 429, { error: 'too many requests' });
+  let b; try { b = JSON.parse(await readBody(req)); } catch (e) { return send(res, e.code === 413 ? 413 : 400, { error: 'bad body' }); }
+  const now = Date.now();
+  if (p === '/api/push/subscribe') {
+    if (!validSub(b.subscription)) return send(res, 400, { error: 'not a valid push subscription' });
+    const id = subId(b.subscription.endpoint);
+    if (!subs[id] && Object.keys(subs).length >= 2000) return send(res, 503, { error: 'too many reminders registered' });
+    const user = typeof b.user === 'string' && NAME_RE.test(b.user.toLowerCase()) ? b.user.toLowerCase() : null, old = subs[id] || {};
+    subs[id] = { id, sub: { endpoint: b.subscription.endpoint, keys: { p256dh: b.subscription.keys.p256dh, auth: b.subscription.keys.auth } }, user,
+      hour: intIn(b.hour, 0, 23, 19), min: intIn(b.min, 0, 59, 0), tz: intIn(b.tz, -840, 840, 0), state: cleanState(b.state),
+      sentDay: old.sentDay || null, created: old.created || now, updated: now };
+    if (!old.id) skipTodayIfPassed(subs[id]);
+    saveSubs(); return send(res, 200, { ok: true });
+  }
+  const rec = typeof b.endpoint === 'string' ? subs[subId(b.endpoint)] : null;
+  if (!rec) return send(res, 404, { error: 'unknown subscription' });
+  if (p === '/api/push/state' || p === '/api/push/prefs') {
+    if (b.state) rec.state = cleanState(b.state);
+    if (b.tz != null) rec.tz = intIn(b.tz, -840, 840, rec.tz);
+    if (b.hour != null) rec.hour = intIn(b.hour, 0, 23, rec.hour);
+    if (b.min != null) rec.min = intIn(b.min, 0, 59, rec.min);
+    if (p === '/api/push/prefs') skipTodayIfPassed(rec);                   // a time that has passed starts tomorrow
+    rec.updated = now; saveSubs(); return send(res, 200, { ok: true });
+  }
+  if (p === '/api/push/unsubscribe') { delete subs[rec.id]; saveSubs(); return send(res, 200, { ok: true }); }
+  if (p === '/api/push/test') {
+    if (limited(rec.id, 'test', 3, 3600e3)) return send(res, 429, { error: 'only a few test notifications per hour' });
+    const r = await sendPush(rec, { title: 'ChessCoach reminders are on ♞', body: 'This is how your daily reminder will look.', tag: 'test', url: './' });
+    return send(res, r.ok ? 200 : 502, { ok: r.ok });
+  }
+  return send(res, 404, { error: 'not found' });
+}
+
 /* ---------- http ---------- */
 const send = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -267,7 +375,8 @@ function serveStatic(req, res, pathname) {
 async function handle(req, res) {
   const url = new URL(req.url, 'http://x'), ip = clientIp(req);
   const m = url.pathname.match(/^\/api\/profile\/([^/]+)$/);
-  if (url.pathname === '/api/health') return send(res, 200, { ok: true, users: userCount, queued, analysing: current ? current.name : null, depth: DEPTH });
+  if (url.pathname.startsWith('/api/push/')) return handlePush(req, res, url, ip);
+  if (url.pathname === '/api/health') return send(res, 200, { ok: true, users: userCount, queued, analysing: current ? current.name : null, depth: DEPTH, reminders: webpush ? Object.keys(subs).length : null });
   if (!m) {
     if (STATIC && !url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
     return send(res, 404, { error: 'not found' });
@@ -302,6 +411,8 @@ async function handle(req, res) {
     if (limited(ip, 'delete', 10, 3600e3)) return send(res, 429, { error: 'too many requests' });
     const q = queues.get(name); if (q) { queued -= q.length; queues.delete(name); const i = order.indexOf(name); if (i >= 0) order.splice(i, 1); }
     cache.delete(name); delete seen[name]; seenDirty = true;   // also stops the automatic re-checking
+    let removed = false; for (const [id, r] of Object.entries(subs)) if (r.user === name) { delete subs[id]; removed = true; }
+    if (removed) saveSubs();                                   // and any reminders registered for this profile
     try { fs.unlinkSync(userFile(name)); userCount = Math.max(0, userCount - 1); } catch (e) { /* nothing stored */ }
     return send(res, 200, { deleted: true });
   }

@@ -1,0 +1,11 @@
+{
+  "name": "chesscoach-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ChessCoach API: public cache of chess.com games, Stockfish analysis, daily training reminders (Web Push)",
+  "main": "server.js",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}

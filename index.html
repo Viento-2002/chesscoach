@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#262421">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ChessCoach">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ChessCoach</title>
 <style>
 :root{--bg:#161512;--panel:#262421;--panel2:#302e2b;--text:#e8e6e3;--mute:#9a9792;--accent:#81b64c;--light:#eeeed2;--dark:#769656;
@@ -334,6 +341,7 @@ async function syncFromServer(poll,manual){
   if(!poll||(S.sel==null&&!S.tr&&(fresh.length||added))){try{render()}catch(e){showErr('showing the page',e)}}
   pollSoon(p.pending?15000:60000); // faster while the server is busy analysing, otherwise once a minute
   setTimeout(warmThemes,2500);     // recognise the themes of your puzzles quietly in the background
+  setTimeout(pushSync,3000);       // keep the reminder server up to date with your training
   return true;
 }
 let pollTimer=null;
@@ -1084,6 +1092,7 @@ const actions={
   toggleImport:()=>{S.showImport=!S.showImport;render()},
   importPgn:()=>{S.impMsg=importPgn($('#pgnText').value,$('#pgnSide').value);if(/^\d+ game/.test(S.impMsg)&&!/^0 game/.test(S.impMsg)){S.pgnDraft='';}render()},
   wipe:()=>{if(confirm(`Delete all saved games, analysis and training progress for "${S.user}" from this device, and remove the cached profile from the ChessCoach server?`)){
+    if(S.push.sub)pushDisable();
     if(S.server)fetch(apiUrl('profile',S.user),{method:'DELETE'}).catch(()=>{});
     DB.wipe(S.user.toLowerCase()+'|').catch(()=>{}).then(()=>{ls.set('cc:user','');S.user='';S.games=[];S.stored=[];S.byUrl=new Map();S.train={};S.tr=null;S.sel=null;$('#user').value='';setStatus('');render()})}},
   gotrain:()=>{S.tab='train';render()},
@@ -1373,7 +1382,7 @@ function goalView(){
 function trainView(pz){
   const m=S.trainMode;
   const tab=(k,l)=>`<button class="${m===k?'on':''}" data-a="tmode" data-m="${k}">${l}</button>`;
-  return `<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}</div>`
+  return streakBanner()+`<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}</div>`
     +(m==='openings'?drillView():m==='endgames'?egView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
 }
 function famSet(label,variation){
@@ -1391,6 +1400,7 @@ function logTrain(kind,ok){ // every first attempt is logged with its time: this
   S.log.push({t:Date.now(),k:kind,ok:ok?1:0});
   if(S.log.length>3000)S.log=S.log.slice(-3000);
   save(K('log'),S.log);
+  pushSync(); // the server must know you trained today, so it does not remind you
 }
 function cardUpdate(key,success){
   logTrain('drill',success);
@@ -1641,6 +1651,7 @@ function progressView(){
   if(!w.tr.n)focus.push('You have not trained this week. Ten minutes a day of your own mistakes works better than a long session once a week.');
   if(due)focus.push(`<b>${due}</b> puzzles from your own games are due: <a href="#" data-a="tabto" data-t="train" data-m="mistakes">train now</a>.`);
   if(S.weekOff===0||focus.length)h+=`<div class="card"><h3>Focus for ${S.weekOff===0?'the rest of this week and next':'the following week'}</h3><ul class="plan" style="padding-left:20px;margin:0">${focus.map(x=>`<li>${x}</li>`).join('')||'<li>Keep going: nothing stands out.</li>'}</ul></div>`;
+  h+=reminderCard();
   // the last 8 weeks
   const rows=[];for(let k=0;k<8&&-k>=-maxBack;k++){const wk=weekData(addDays(cur,-7*k));rows.push({k,wk})}
   const accPts=rows.slice().reverse().filter(r=>r.wk.acc!=null).map((r,i)=>({t:i,r:r.wk.acc}));
@@ -1668,10 +1679,14 @@ const EG=[
    desc:'Cut off the king, then drive it to the edge.',tip:'Use the rook to cut the king off along a rank or file it cannot cross, walk your king to the opposition, then check from the side to push it towards the edge. Never leave the rook where the king can capture it.'},
   {id:'krrk',group:'Checkmates',title:'Two Rooks vs King (ladder mate)',goal:'mate',pieces:'KRR',max:14,level:'Easy',
    desc:'The ladder: one rook checks, the other cuts off the next rank.',tip:'Put one rook on the rank next to the king and check with the other on the next rank, then repeat: the king is pushed to the edge a rank at a time.'},
+  {id:'kbnk',group:'Checkmates',title:'Bishop + Knight vs King',goal:'mate',pieces:'KBN',max:40,level:'Hard',win:100,
+   desc:'The hardest basic mate: drive the king to the right corner.',tip:'The king must be mated in a corner of the same colour as your bishop. Bring all three pieces together, push the king to the edge, then to the correct corner with the "W" manoeuvre of the knight. Be patient: it takes about 20 moves, and the 50-move rule gives you enough time.'},
   {id:'kpk-win',group:'Pawn endings',title:'King + Pawn vs King: win it',goal:'promote',pieces:'KP',max:30,level:'Medium',
    desc:'Promote the pawn against the best defence.',tip:'Your king must lead the pawn, not follow it. Aim for the key squares in front of the pawn and use the opposition. With the pawn ahead of your king it is often only a draw.'},
   {id:'kpk-draw',group:'Pawn endings',title:'King + Pawn vs King: hold the draw',goal:'hold',role:'defender',pieces:'KP',max:10,level:'Medium',
    desc:'You defend: stop the pawn from queening.',tip:'Get in front of the pawn, take the opposition when you can, and stay on the key squares. A king in front of the pawn on its 6th rank is usually enough to draw.'},
+  {id:'kqkp',group:'Pawn endings',title:'Queen vs pawn about to promote',goal:'win',pieces:'KQ',weakPawn:true,max:25,level:'Hard',
+   desc:'A pawn on the 7th rank is one step from queening: stop it.',tip:'Use checks to drag the enemy king in front of its own pawn, then bring your king closer while the queen keeps checking. Once the pawn is won, the rest is a simple queen mate.'},
   {id:'lucena',group:'Rook endings',title:'Lucena position (win)',goal:'promote',fen:'3K1k2/3P4/8/8/8/8/r7/4R3 w - - 0 1',user:'w',max:22,level:'Hard',
    desc:'The most famous winning rook ending: build a bridge.',tip:'Bring your rook to the 4th rank (Re4), then step your king out and use the rook as a bridge to block the checks, so the pawn can finally queen.'},
   {id:'philidor',group:'Rook endings',title:'Philidor position (draw)',goal:'hold',role:'defender',fen:'4k3/8/r7/3PK3/8/8/8/4R3 b - - 0 1',user:'b',max:14,level:'Hard',
@@ -1710,13 +1725,14 @@ async function egMake(def){
       if(!put(file(),r,ch)){ok=false;break}
     }
     if(!ok)continue;
+    if(def.weakPawn){const weak=strong==='w'?'b':'w';if(!put(file(),weak==='w'?6:1,weak==='w'?'P':'p'))continue} // the enemy pawn, one step from queening
     const fen=fenOfBoard(rows,user);
     try{
       if(new Chess(flipFen(fen)).in_check())continue; // the side that just "moved" cannot be in check
       const c=new Chess(fen);if(!c.moves().length||c.in_check()&&def.goal==='hold')continue;
     }catch(e){continue}
     const e0=await evalPos(fen,12),u={c:user==='w'?e0.c:(e0.c==null?null:-e0.c),m:e0.m==null?null:(user==='w'?e0.m:-e0.m)};
-    const winning=u.m>0&&u.m>=2||(u.m==null&&u.c>=300);
+    const winning=u.m>0&&u.m>=2||(u.m==null&&u.c>=(def.win||300));
     if(def.goal==='hold'?(u.m==null&&Math.abs(u.c)<=30):winning)return {fen,user,e0};
   }
   const fb=def.goal==='hold'?'8/8/8/8/8/k7/p7/K7 w - - 0 1':'8/8/8/3k4/8/3K4/3Q4/8 w - - 0 1';
@@ -1761,7 +1777,7 @@ async function egMove(from,to){
   const e1=await evalPos(c.fen(),12);
   if(S.eg!==g)return;
   const u0=egU(g,g.e0),u1=egU(g,e1);
-  const ok=hold?(u1.m==null?u1.c>=-60:u1.m>0):(u1.m>0||(u1.m==null&&u1.c>=300));
+  const ok=hold?(u1.m==null?u1.c>=-60:u1.m>0):(u1.m>0||(u1.m==null&&u1.c>=(g.def.win||300)));
   if(!ok){ // the move spoils the result: take it back and say why
     c.undo();g.moves--;g.mistakes++;g.state='wrong';
     const best=g.e0.b?egSan(before,g.e0.b):'?';
@@ -1770,6 +1786,7 @@ async function egMove(from,to){
   }
   g.msg=(u0.m>0&&u1.m>0&&u1.m>u0.m-1)?`Still winning, but mate in ${u0.m} was available (a faster route).`:'✓ Good move.';
   if(mv.promotion&&g.def.goal==='promote')return egFinish(g,true,'You promoted the pawn and the win is safe! 🎉');
+  if(g.def.goal==='win'&&!c.fen().split(' ')[0].includes(g.user==='w'?'p':'P'))return egFinish(g,true,'You stopped the pawn, and the win is safe! 🎉');
   if(!e1.b)return egFinish(g,hold,'The game is over.');
   c.move(parseUci(e1.b));g.last=[e1.b.slice(0,2),e1.b.slice(2,4)];
   if(c.in_checkmate())return egFinish(g,false,'You were checkmated.');
@@ -1808,7 +1825,7 @@ function egView(){
   const arrows=[];
   if((g.state==='wrong'||g.hint>=2)&&g.e0&&g.e0.b)arrows.push({...parseUci(g.e0.b),color:'#81b64c'});
   const sel=g.state==='ask'?(g.sel||(g.hint>=1&&g.e0&&g.e0.b?g.e0.b.slice(0,2):null)):null;
-  const goal=g.def.goal==='mate'?`Checkmate within ${g.def.max} moves`:g.def.goal==='promote'?'Promote the pawn and keep the win':`Hold the draw for ${g.def.max} moves`;
+  const goal=g.def.goal==='mate'?`Checkmate within ${g.def.max} moves`:g.def.goal==='promote'?'Promote the pawn and keep the win':g.def.goal==='win'?'Stop the pawn and keep the win':`Hold the draw for ${g.def.max} moves`;
   let h=`<div class="row"><div><div class="boardwrap">${boardHTML(g.chess.fen(),g.user==='b',g.last,arrows,{click:g.state==='ask',sel,targets:g.targets})}</div></div>
     <div class="side"><div class="card"><div class="mute hint">${g.def.title} · you play ${g.user==='w'?'White':'Black'}</div>
     <h3 style="margin:6px 0">${goal}</h3>`;
@@ -1960,9 +1977,98 @@ Object.assign(actions,{
   tactheme:d=>{const pz=buildPuzzles().filter(p=>puzzleThemes(p).some(x=>x.k===d.t));trainStart(pz.some(isDue)?false:true,d.t);render();scrollTo(0,0)},
 });
 
+/* ======================================================================
+   Daily reminder (Web Push) and the training streak
+   ====================================================================== */
+const pad2=n=>String(n).padStart(2,'0');
+const localISO=ms=>{const d=new Date(ms);return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`};
+const isStandalone=()=>(window.matchMedia&&matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true;
+const isIOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const b64key=s=>{const raw=atob((s+'='.repeat((4-s.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(raw,c=>c.charCodeAt(0))};
+S.push={ready:false,supported:false,needInstall:false,perm:'default',sub:null,hour:19,min:0,busy:false,msg:'',ok:true};
+const pushState=()=>({lastTrain:S.log.length?localISO(S.log[S.log.length-1].t):null,streak:trainStreak(),due:S.user?buildPuzzles().filter(isDue).length:0});
+async function pushPost(what,body){
+  const r=await fetch('api/push/'+what,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||'the server said '+r.status)}
+  return r;
+}
+async function pushInit(){
+  const P=S.push;
+  if(!('serviceWorker' in navigator)){P.ready=true;return}
+  try{await navigator.serviceWorker.register('sw.js')}catch(e){P.ready=true;return}
+  if(!('PushManager' in window&&'Notification' in window)){P.needInstall=isIOS()&&!isStandalone();P.ready=true;return} // iPhone: push only works from the home-screen app
+  P.supported=true;P.perm=Notification.permission;
+  try{const reg=await navigator.serviceWorker.ready;P.sub=await reg.pushManager.getSubscription()}catch(e){}
+  try{const s=JSON.parse(ls.get('cc:remind')||'null');if(s){P.hour=s.hour;P.min=s.min}}catch(e){}
+  P.ready=true;
+  if(P.sub)pushSync();
+}
+let _pushT=null;
+function pushSync(){ // tell the server how training is going, so it does not remind you after you trained
+  const P=S.push;if(!P.sub||!S.user)return;
+  clearTimeout(_pushT);
+  _pushT=setTimeout(()=>{pushPost('state',{endpoint:P.sub.endpoint,tz:-new Date().getTimezoneOffset(),state:pushState()}).catch(()=>{})},1500);
+}
+async function pushEnable(){
+  const P=S.push;P.busy=true;P.msg='';render();
+  try{
+    const perm=await Notification.requestPermission();P.perm=perm;
+    if(perm!=='granted')throw new Error('Notifications are blocked. Allow them for ChessCoach in your phone or browser settings, then try again.');
+    const reg=await navigator.serviceWorker.ready,{key}=await (await fetch('api/push/key')).json();
+    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64key(key)});
+    await pushPost('subscribe',{subscription:sub.toJSON(),user:S.user,hour:P.hour,min:P.min,tz:-new Date().getTimezoneOffset(),state:pushState()});
+    P.sub=sub;P.msg='Reminders are on. Use "Send a test" to see how one looks.';P.ok=true;
+  }catch(e){P.msg=e.message||String(e);P.ok=false}
+  P.busy=false;render();
+}
+async function pushDisable(){
+  const P=S.push;P.busy=true;render();
+  try{const ep=P.sub&&P.sub.endpoint;if(P.sub)await P.sub.unsubscribe();if(ep)await pushPost('unsubscribe',{endpoint:ep}).catch(()=>{});P.sub=null;P.msg='Reminders are off.';P.ok=true}
+  catch(e){P.msg=e.message;P.ok=false}
+  P.busy=false;render();
+}
+function reminderCard(){
+  const P=S.push;if(!P.ready||!S.user)return '';
+  let h='<div class="card" id="reminderCard"><h3>🔔 Daily reminder</h3>';
+  const time=`<input type="time" id="remindTime" value="${pad2(P.hour)}:${pad2(P.min)}" style="width:auto;min-height:34px">`;
+  if(P.needInstall)h+=`<p style="margin-top:0">To get reminders on your iPhone, ChessCoach first has to be installed as an app:</p>
+    <ol style="margin:0;padding-left:20px"><li>Open this page in <b>Safari</b> and tap the <b>Share</b> button.</li><li>Choose <b>Add to Home Screen</b>.</li><li>Open <b>ChessCoach</b> from your home screen, come back to this card and turn the reminder on.</li></ol>`;
+  else if(!P.supported)h+='<p class="mute" style="margin:0">This browser does not support notifications. On a phone, install ChessCoach to the home screen; on a computer use Chrome, Edge, Firefox or Safari.</p>';
+  else if(P.perm==='denied')h+='<p class="mute" style="margin:0">Notifications are blocked for this site. Allow them in your browser or phone settings, then reload this page.</p>';
+  else if(!P.sub)h+=`<p class="mute" style="margin-top:0">One gentle reminder a day, only if you have not trained yet: it mentions your streak and the puzzles waiting. You can turn it off at any time.</p>
+    <div class="ctl"><label class="mute">Remind me at ${time}</label><button class="primary" data-a="pushon" ${P.busy?'disabled':''}>Turn on reminders</button></div>`;
+  else h+=`<p style="margin-top:0">Reminders are <b style="color:var(--accent)">on</b>: one a day at ${time}, if you have not trained yet.</p>
+    <div class="ctl"><button data-a="pushtest" ${P.busy?'disabled':''}>Send a test</button><button data-a="pushoff" ${P.busy?'disabled':''}>Turn off</button></div>`;
+  if(P.msg)h+=`<div class="coach ${P.ok?'ok':'bad'}" style="margin:10px 0 0">${esc(P.msg)}</div>`;
+  return h+'</div>';
+}
+function streakBanner(){
+  const n=trainStreak(),today=S.log.some(e=>localISO(e.t)===localISO(Date.now()));
+  return `<div class="card" style="display:flex;gap:12px;align-items:center;padding:10px 14px">
+    <div style="font-size:28px;line-height:1">${n?'🔥':'♞'}</div>
+    <div style="flex:1"><b>${n?`${n}-day streak`:'Start a streak'}</b><div class="mute hint">${today?'You trained today ✓':n?'Train today to keep it going':'Solve one puzzle today to begin'}</div></div>
+    ${S.push.ready&&!S.push.sub&&(S.push.supported||S.push.needInstall)?'<button data-a="gotoreminder">🔔 Reminder</button>':''}</div>`;
+}
+Object.assign(actions,{
+  pushon:()=>{pushEnable()},
+  pushoff:()=>{pushDisable()},
+  pushtest:async()=>{const P=S.push;P.busy=true;P.msg='';render();
+    try{await pushPost('test',{endpoint:P.sub.endpoint});P.msg='Test sent: it should arrive in a few seconds.';P.ok=true}catch(e){P.msg='Could not send the test: '+e.message;P.ok=false}
+    P.busy=false;render()},
+  gotoreminder:()=>{S.tab='progress';render();const c=$('#reminderCard');if(c)c.scrollIntoView({block:'center'})},
+});
+document.addEventListener('change',e=>{
+  if(e.target.id!=='remindTime')return;
+  const m=String(e.target.value).match(/^(\d{1,2}):(\d{2})$/);if(!m)return;
+  const P=S.push;P.hour=+m[1];P.min=+m[2];ls.set('cc:remind',JSON.stringify({hour:P.hour,min:P.min}));
+  if(P.sub)pushPost('prefs',{endpoint:P.sub.endpoint,hour:P.hour,min:P.min,tz:-new Date().getTimezoneOffset()}).then(()=>{P.msg=`Reminder time set to ${pad2(P.hour)}:${pad2(P.min)}.`;P.ok=true;render()}).catch(er=>{P.msg=er.message;P.ok=false;render()});
+});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)pushSync()});
+
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
   loadBook();
+  pushInit().then(()=>{if(S.user&&(S.tab==='progress'||S.tab==='train'))render()}).catch(()=>{});
   const m=ls.get('cc:months');if(m)$('#months').value=m;
   const u=ls.get('cc:user');
   if(u){$('#user').value=u;loadUser(u,true).catch(e=>showErr('loading',e))}else render();
