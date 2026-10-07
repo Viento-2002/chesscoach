@@ -787,7 +787,7 @@ function boardHTML(fen,flip,last,arrows,o){
     const mk=o.marks&&o.marks.find(m=>m.sq===sq);
     h+=`<div class="sq ${light?'l':'d'}${last&&(sq===last[0]||sq===last[1])?' hl':''}${o.sel===sq?' sel':''}${mk?' '+mk.cls:''}"${o.click?` data-a="tsq" data-sq="${sq}"`:''}>`;
     if(!o.nocoords){if(x===0)h+=`<b class="r">${8-r}</b>`;if(y===7)h+=`<b class="f">${'abcdefgh'[f]}</b>`}
-    if(pc)h+=`<img src="${PIECE(pc===pc.toUpperCase()?'w':'b',pc)}" alt="">`;
+    if(pc&&!o.blind)h+=`<img src="${PIECE(pc===pc.toUpperCase()?'w':'b',pc)}" alt="">`;
     if(o.badge&&o.badge.sq===sq)h+=badge(o.badge.cls,true);
     if(o.targets&&o.targets.includes(sq))h+='<i class="tg"></i>';
     h+='</div>';
@@ -2612,7 +2612,7 @@ function plBestMove(fen,elo){ // one move from the engine at the chosen strength
 }
 function plStart(color){
   const col=color==='r'?(Math.random()<.5?'w':'b'):color,elo=S.plElo||1600;
-  S.pl={chess:new Chess(),color:col,elo,state:'play',thinking:false,last:null,sel:null,targets:[],msg:'',token:0};
+  S.pl={chess:new Chess(),blind:!!S.plBlind,color:col,elo,state:'play',thinking:false,last:null,sel:null,targets:[],msg:'',token:0};
   render();if(col==='b')plReply();
 }
 function plOver(){
@@ -2651,15 +2651,16 @@ function plView(){
     const lv=S.plElo||1600;
     return `<div class="card"><h3>♟ Play Stockfish</h3><p class="mute" style="margin-top:0">Practise a full game against the engine. Choose how strong it plays.</p>
       <div class="chips">${PLAY_LEVELS.map(([e,n])=>`<button class="chip ${lv===e?'on':''}" data-a="plelo" data-e="${e}">${n} <span class="mute hint">${e<3000?e:'full'}</span></button>`).join('')}</div>
+      <div class="chips" style="margin-top:10px"><button class="chip ${S.plBlind?'on':''}" data-a="plblindmenu">🙈 Blindfold (pieces hidden)</button></div>
       <div class="pz-actions" style="margin-top:12px"><button class="primary" data-a="plstart" data-c="w">Play White</button><button class="primary" data-a="plstart" data-c="b">Play Black</button><button data-a="plstart" data-c="r">Random</button></div></div>${dailyCard()}`;
   }
   const c=p.chess,flip=p.color==='b';
   const status=p.state==='over'?p.msg:p.thinking?'Stockfish is thinking…':p.msg||(c.in_check()?'Check!':'Your move');
-  return `<div class="row"><div><div class="boardwrap">${boardHTML(c.fen(),flip,p.last,null,{click:true,sel:p.sel,targets:p.targets})}</div></div>
+  return `<div class="row"><div><div class="boardwrap">${boardHTML(c.fen(),flip,p.last,null,{click:true,sel:p.sel,targets:p.targets,blind:p.blind&&p.state==='play'})}</div></div>
     <div class="side"><div class="card"><h3>Playing Stockfish ${p.elo<3000?p.elo:'(full strength)'}</h3>
     <div class="coach ${p.state==='over'?'ok':''}">${esc(status)}</div>
     <div class="mute hint">${esc(c.history().join(' ').slice(-160))}</div>
-    <div class="ctl">${p.state==='play'?`<button data-a="pltake" ${c.history().length>=(p.color==='w'?2:3)&&!p.thinking?'':'disabled'}>↶ Take back</button><button data-a="plresign">Resign</button>`
+    <div class="ctl">${p.state==='play'?`<button data-a="pltake" ${c.history().length>=(p.color==='w'?2:3)&&!p.thinking?'':'disabled'}>↶ Take back</button><button data-a="plresign">Resign</button>${p.blind?'<button data-a="plpeek">👁 Peek</button>':''}`
       :`<button class="primary" data-a="plagain">Play again</button><button data-a="plexplore">🔬 Analyse</button><button data-a="plpgn">⬇ PGN</button>`}<button data-a="plquit">Leave</button></div></div></div></div>`;
 }
 function plPgn(){
@@ -2669,6 +2670,10 @@ function plPgn(){
   return c.pgn();
 }
 Object.assign(actions,{
+  plblindmenu:()=>{S.plBlind=!S.plBlind;render()},
+  plpeek:()=>{const p=S.pl;p.blind=false;render();setTimeout(()=>{if(S.pl===p&&p.state==='play'){p.blind=true;render()}},2500)},
+  rushshare:async()=>{const r=S.rs,t=`I solved ${r.score} puzzles from my own mistakes in 3 minutes of Puzzle Rush on ChessCoach ⚡ https://chess.vrhconsultancy.nl/`;
+    try{if(navigator.share)await navigator.share({text:t});else{await navigator.clipboard.writeText(t);setStatus('Score copied to the clipboard.')}}catch(e){/* cancelled */}},
   plelo:d=>{S.plElo=+d.e;render()},
   plstart:d=>plStart(d.c),
   pltake:()=>{const p=S.pl;if(!p||p.thinking)return;p.token++;p.chess.undo();if(p.chess.turn()!==p.color)p.chess.undo();p.last=null;p.sel=null;p.targets=[];render()},
@@ -2790,7 +2795,7 @@ function rushView(){
     <div class="pz-actions"><button class="primary" data-a="rushstart">Start</button></div></div>`;
   if(r.state==='done')return `<div class="card"><h3>${r.newBest?'🏆 New best!':'Rush over'}</h3><div class="cards" style="margin:0"><div class="stat"><div class="mute">Solved</div><div class="big">${r.score}</div></div>
     <div class="stat"><div class="mute">Best</div><div class="big">${Math.max(r.best,r.score)}</div></div></div>
-    <div class="pz-actions"><button class="primary" data-a="rushstart">Play again</button><button data-a="rushquit">Back</button></div></div>`;
+    <div class="pz-actions"><button class="primary" data-a="rushstart">Play again</button><button data-a="rushshare">Share</button><button data-a="rushquit">Back</button></div></div>`;
   const p=r.pool[r.i%r.pool.length],left=Math.max(0,Math.ceil((r.end-Date.now())/1000));
   return `<div class="card" style="display:flex;align-items:center;gap:14px"><div style="flex:1"><div class="mute hint">${p.color==='w'?'White':'Black'} to move</div><div class="big">${'❌'.repeat(r.strikes)}${'▫️'.repeat(RUSH_STRIKES-r.strikes)}</div></div>
     <div style="text-align:center"><div class="mute hint">Time</div><div class="big" id="rsTime">${Math.floor(left/60)}:${pad2(left%60)}</div></div><div style="text-align:center"><div class="mute hint">Solved</div><div class="big">${r.score}</div></div></div>
