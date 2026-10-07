@@ -1189,6 +1189,7 @@ const actions={
   tquit:()=>{S.tr=null;render()},
   tsq:d=>{
     if(S.ex){exTap(d.sq);return}
+    if(S.trainMode==='play'){if(S.pl)plTap(d.sq);else dpTap(d.sq);return}
     if(S.trainMode==='vision'&&S.vis){visTap(d.sq);return}
     if(S.trainMode==='openings'&&S.ot){drillTap(d.sq);return}
     if(S.trainMode==='endgames'&&S.eg){egTap(d.sq);return}
@@ -1475,8 +1476,8 @@ function goalView(){
 function trainView(pz){
   const m=S.trainMode;
   const tab=(k,l)=>`<button class="${m===k?'on':''}" data-a="tmode" data-m="${k}">${l}</button>`;
-  return streakBanner()+`<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}${tab('vision','Vision')}</div>`
-    +(m==='openings'?drillView():m==='endgames'?egView():m==='vision'?visView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
+  return streakBanner()+`<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}${tab('play','Play')}${tab('vision','Vision')}</div>`
+    +(m==='openings'?drillView():m==='endgames'?egView():m==='vision'?visView():m==='play'?plView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
 }
 function famSet(label,variation){
   if(!BOOK||!BOOK.f[label])return null;
@@ -1752,7 +1753,7 @@ function progressView(){
   h+=`<div class="card"><h3>The last ${rows.length} weeks</h3>${accPts.length>=2?`<div class="mute hint" style="margin-bottom:4px">Accuracy per week</div>${lineChart(accPts,{h:90,unit:'%'})}`:''}
     <div class="tw"><table style="margin-top:8px"><tr><th>Week</th><th>Games</th><th>Wins</th><th>Acc.</th><th>Mist./100</th><th>Rating</th></tr>
     ${rows.map(({k,wk})=>{const mt=mainTc(wk);return `<tr class="click" data-a="wkgo" data-o="${-k}"><td>${k===0?'This week':fmtDay(wk.ws)}</td><td>${wk.n}</td><td>${wk.n?pct(wk.W,wk.n)+'%':'–'}</td><td>${wk.acc!=null?wk.acc.toFixed(0)+'%':'–'}</td><td>${wk.bad100!=null?wk.bad100.toFixed(1):'–'}</td><td>${mt?(mt[1].delta>0?'+':'')+mt[1].delta+' <span class="mute hint">'+mt[0]+'</span>':'–'}</td></tr>`}).join('')}</table></div></div>`;
-  return h;
+  return h+calendarCard();
 }
 Object.assign(actions,{
   wknav:d=>{S.weekOff+= +d.d;render();scrollTo(0,0)},
@@ -2583,6 +2584,158 @@ function scoutView(){
 }
 Object.assign(actions,{scout:()=>{const el=$('#scoutName');scoutRun(el?el.value:'')}});
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='scoutName'){e.preventDefault();scoutRun(e.target.value)}});
+
+/* ======================================================================
+   Play vs Stockfish (adjustable strength), the chess.com daily puzzle, and the training calendar
+   ====================================================================== */
+S.pl=null;S.dp=null;S.dpLoading=false;
+const PLAY_LEVELS=[[1350,'Beginner'],[1600,'Casual'],[1900,'Club'],[2300,'Strong'],[3000,'Maximum']];
+function plBestMove(fen,elo){ // one move from the engine at the chosen strength; MultiPV and strength are put back afterwards
+  return engineJob(async()=>{
+    await getEngine();
+    eng.send('setoption name MultiPV value 1');
+    if(elo<3000){eng.send('setoption name UCI_LimitStrength value true');eng.send('setoption name UCI_Elo value '+elo)}
+    try{
+      return await new Promise(res=>{
+        eng.set(l=>{if(l.startsWith('bestmove'))res(l.split(' ')[1])});
+        eng.send('position fen '+fen);eng.send(elo<3000?'go movetime 700':'go depth 12 movetime 1500');
+      });
+    }finally{eng.send('setoption name UCI_LimitStrength value false');eng.send('setoption name MultiPV value 2')}
+  });
+}
+function plStart(color){
+  const col=color==='r'?(Math.random()<.5?'w':'b'):color,elo=S.plElo||1600;
+  S.pl={chess:new Chess(),color:col,elo,state:'play',thinking:false,last:null,sel:null,targets:[],msg:'',token:0};
+  render();if(col==='b')plReply();
+}
+function plOver(){
+  const p=S.pl,c=p.chess;
+  if(!c.game_over())return false;
+  p.state='over';p.thinking=false;
+  p.msg=c.in_checkmate()?(c.turn()===p.color?'Checkmate: Stockfish wins this one.':'Checkmate! You beat Stockfish 🎉'):c.in_stalemate()?'Stalemate: a draw.':'The game is drawn.';
+  snd(c.in_checkmate()&&c.turn()!==p.color?'win':'good');
+  if(c.history().length>=10)logTrain('play',true);
+  render();return true;
+}
+async function plReply(){
+  const p=S.pl;if(!p||p.state!=='play'||plOver())return;
+  if(S.busy){p.msg='Stop the running analysis first: the engine is busy.';render();return}
+  const token=++p.token;p.thinking=true;p.msg='';render();
+  const u=await plBestMove(p.chess.fen(),p.elo);
+  if(S.pl!==p||token!==p.token||p.state!=='play'||!u||u==='(none)')return;
+  const mv=p.chess.move(parseUci(u));p.thinking=false;
+  if(mv){p.last=[mv.from,mv.to];snd('move')}
+  if(!plOver())render();
+}
+function plTap(sq){
+  const p=S.pl;if(!p||p.state!=='play'||p.thinking||p.chess.turn()!==p.color)return;
+  const c=p.chess,pc=c.get(sq);
+  if(p.sel&&p.targets.includes(sq)){
+    const mv=c.move({from:p.sel,to:sq,promotion:'q'});p.sel=null;p.targets=[];
+    if(mv){p.last=[mv.from,mv.to];snd('move');if(!plOver())plReply()}
+    return;
+  }
+  if(pc&&pc.color===c.turn()){p.sel=sq;p.targets=c.moves({square:sq,verbose:true}).map(m=>m.to)}else{p.sel=null;p.targets=[]}
+  render();
+}
+function plView(){
+  const p=S.pl;
+  if(!p){
+    const lv=S.plElo||1600;
+    return `<div class="card"><h3>♟ Play Stockfish</h3><p class="mute" style="margin-top:0">Practise a full game against the engine. Choose how strong it plays.</p>
+      <div class="chips">${PLAY_LEVELS.map(([e,n])=>`<button class="chip ${lv===e?'on':''}" data-a="plelo" data-e="${e}">${n} <span class="mute hint">${e<3000?e:'full'}</span></button>`).join('')}</div>
+      <div class="pz-actions" style="margin-top:12px"><button class="primary" data-a="plstart" data-c="w">Play White</button><button class="primary" data-a="plstart" data-c="b">Play Black</button><button data-a="plstart" data-c="r">Random</button></div></div>${dailyCard()}`;
+  }
+  const c=p.chess,flip=p.color==='b';
+  const status=p.state==='over'?p.msg:p.thinking?'Stockfish is thinking…':p.msg||(c.in_check()?'Check!':'Your move');
+  return `<div class="row"><div><div class="boardwrap">${boardHTML(c.fen(),flip,p.last,null,{click:true,sel:p.sel,targets:p.targets})}</div></div>
+    <div class="side"><div class="card"><h3>Playing Stockfish ${p.elo<3000?p.elo:'(full strength)'}</h3>
+    <div class="coach ${p.state==='over'?'ok':''}">${esc(status)}</div>
+    <div class="mute hint">${esc(c.history().join(' ').slice(-160))}</div>
+    <div class="ctl">${p.state==='play'?`<button data-a="pltake" ${c.history().length>=(p.color==='w'?2:3)&&!p.thinking?'':'disabled'}>↶ Take back</button><button data-a="plresign">Resign</button>`
+      :`<button class="primary" data-a="plagain">Play again</button><button data-a="plexplore">🔬 Analyse</button><button data-a="plpgn">⬇ PGN</button>`}<button data-a="plquit">Leave</button></div></div></div></div>`;
+}
+function plPgn(){
+  const p=S.pl,c=new Chess();p.chess.history().forEach(m=>c.move(m));
+  const sf='Stockfish '+(p.elo<3000?p.elo:'max');
+  c.header('Event','ChessCoach practice game','White',p.color==='w'?'You':sf,'Black',p.color==='b'?'You':sf,'Date',new Date().toISOString().slice(0,10).replace(/-/g,'.'));
+  return c.pgn();
+}
+Object.assign(actions,{
+  plelo:d=>{S.plElo=+d.e;render()},
+  plstart:d=>plStart(d.c),
+  pltake:()=>{const p=S.pl;if(!p||p.thinking)return;p.token++;p.chess.undo();if(p.chess.turn()!==p.color)p.chess.undo();p.last=null;p.sel=null;p.targets=[];render()},
+  plresign:()=>{const p=S.pl;if(!p)return;p.token++;p.state='over';p.thinking=false;p.msg='You resigned.';render()},
+  plagain:()=>{const e=S.pl.elo;S.pl=null;S.plElo=e;render()},
+  plquit:()=>{if(S.pl)S.pl.token++;S.pl=null;render()},
+  plpgn:()=>downloadText('chesscoach-practice-game.pgn',plPgn()),
+  plexplore:()=>{const p=S.pl,c=new Chess(p.chess.fen());
+    S.ex={g:null,chess:c,start:c.fen(),hist:[],flip:p.color==='b',lines:[],thinking:false,depth:14,token:0,msg:'',sel:null,targets:[],last:p.last};
+    render();exSearch()},
+});
+/* ---- chess.com daily puzzle ---- */
+async function dailyLoad(random){
+  S.dpLoading=true;S.dp=null;render();
+  try{
+    const j=await getJson('https://api.chess.com/pub/puzzle'+(random?'/random':''));
+    const sol=[],c=new Chess(j.fen);
+    for(const san of sansOf(j.pgn||'')){const m=c.move(san);if(!m)break;sol.push({from:m.from,to:m.to,san:m.san})}
+    if(!j.fen||!sol.length)throw new Error('the puzzle could not be read');
+    S.dp={title:j.title||'Daily puzzle',fen:j.fen,sol,i:0,chess:new Chess(j.fen),sel:null,targets:[],last:null,state:'ask',msg:'',hint:false};
+    S.dp.flip=S.dp.chess.turn()==='b';
+  }catch(e){S.dp={err:e.message}}
+  S.dpLoading=false;render();
+}
+function dailyCard(){
+  const d=S.dp;
+  if(S.dpLoading)return '<div class="card"><h3>📅 Daily puzzle</h3><div class="mute">Loading from chess.com…</div></div>';
+  if(!d||d.err)return `<div class="card"><h3>📅 Daily puzzle</h3><p class="mute" style="margin-top:0">${d&&d.err?esc(d.err)+'. ':''}One fresh puzzle from chess.com every day, and extra random ones whenever you like.</p>
+    <div class="pz-actions"><button class="primary" data-a="dpload">Today's puzzle</button><button data-a="dpload" data-r="1">Random puzzle</button></div></div>`;
+  const c=d.chess,side=new Chess(d.fen).turn()==='w'?'White':'Black';
+  const status=d.state==='done'?'✓ Solved!':d.msg||`${side} to move: find the best move`;
+  return `<div class="card"><h3>📅 ${esc(d.title)}</h3><div class="row"><div><div class="boardwrap">${boardHTML(c.fen(),d.flip,d.last,null,{click:true,sel:d.sel,targets:d.targets,marks:d.hint&&d.state==='ask'?[{sq:d.sol[d.i].from,cls:'ok'}]:[]})}</div></div>
+    <div class="side"><div class="coach ${d.state==='done'?'ok':d.msg&&d.state==='ask'?'bad':''}">${esc(status)}</div>
+    <div class="ctl">${d.state==='ask'?`<button data-a="dphint">💡 Hint</button><button data-a="dpshow">Show answer</button>`:`<button class="primary" data-a="dpload" data-r="1">Another puzzle</button>`}<button data-a="dpclose">Close</button></div></div></div></div>`;
+}
+function dpTap(sq){
+  const d=S.dp;if(!d||d.err||d.state!=='ask'||d.busy)return;
+  const c=d.chess,pc=c.get(sq);
+  if(d.sel&&d.targets.includes(sq)){
+    const want=d.sol[d.i],from=d.sel;d.sel=null;d.targets=[];d.hint=false;
+    if(from!==want.from||sq!==want.to){d.msg='Not the best move. Try again.';snd('bad');render();return}
+    const promo=(want.san.match(/=([QRBN])/)||[])[1];
+    const mv=c.move({from,to:sq,promotion:promo?promo.toLowerCase():'q'});d.last=[mv.from,mv.to];d.msg='';snd('good');d.i++;
+    if(d.i>=d.sol.length){d.state='done';logTrain('daily',true);snd('win');render();return}
+    const reply=d.sol[d.i];d.busy=true;render();
+    setTimeout(()=>{if(S.dp!==d)return;const m2=c.move({from:reply.from,to:reply.to,promotion:'q'});d.last=[m2.from,m2.to];d.i++;d.busy=false;
+      if(d.i>=d.sol.length){d.state='done';logTrain('daily',true);snd('win')}render()},500);
+    return;
+  }
+  if(pc&&pc.color===c.turn()){d.sel=sq;d.targets=c.moves({square:sq,verbose:true}).map(m=>m.to)}else{d.sel=null;d.targets=[]}
+  render();
+}
+Object.assign(actions,{
+  dpload:d=>dailyLoad(!!d.r),
+  dphint:()=>{S.dp.hint=true;render()},
+  dpshow:()=>{const d=S.dp;d.msg='Answer: '+d.sol.filter((_,i)=>i>=d.i&&(i-d.i)%2===0).map(s=>s.san).join(', ');render()},
+  dpclose:()=>{S.dp=null;render()},
+});
+/* ---- training calendar (last 20 weeks) ---- */
+function calendarCard(){
+  const cnt={};S.log.forEach(e=>{const k=localISO(e.t);cnt[k]=(cnt[k]||0)+1});
+  const today=new Date();today.setHours(12,0,0,0);
+  const dow=(today.getDay()+6)%7,start=new Date(today.getTime()-(dow+19*7)*864e5);
+  const lvl=n=>!n?0:n<4?1:n<10?2:n<20?3:4,col=['var(--panel2)','#2f4a25','#4a7a35','#69a043','#8fd14f'];
+  let cells='',days=0,total=0;
+  for(let w=0;w<20;w++)for(let d=0;d<7;d++){
+    const dt=new Date(start.getTime()+(w*7+d)*864e5),base='aspect-ratio:1;border-radius:3px;display:block;';
+    if(dt>today){cells+=`<i style="${base}"></i>`;continue}
+    const n=cnt[localISO(dt.getTime())]||0;if(n){days++;total+=n}
+    cells+=`<i title="${localISO(dt.getTime())}: ${n} exercise${n===1?'':'s'}" style="${base}background:${col[lvl(n)]}"></i>`;
+  }
+  return `<div class="card"><h3>Training calendar</h3><div class="mute hint" style="margin-bottom:8px">${days} training day${days===1?'':'s'} in the last 20 weeks · ${total} exercise${total===1?'':'s'}</div>
+    <div style="display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,auto);grid-template-columns:repeat(20,1fr);gap:3px;width:100%">${cells}</div></div>`;
+}
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
