@@ -101,6 +101,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px}.why{margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}.why ul{margin:4px 0 0;padding-left:20px}.why li{margin:3px 0}
 body.shared header,body.shared nav{display:none}
 #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#3b3935;color:#fff;padding:10px 16px;border-radius:10px;z-index:99;box-shadow:0 4px 18px rgba(0,0,0,.45);max-width:90%;text-align:center}
+.wbar{display:grid;grid-template-columns:120px 1fr 40px;align-items:center;gap:8px;margin:4px 0;font-size:13px}.wbar>div{height:10px;border-radius:5px;background:var(--panel2);overflow:hidden}.wbar i{display:block;height:100%}.wbar b{text-align:right}
 .exline{padding:8px 10px;border-radius:8px;background:var(--panel2);margin:6px 0;cursor:pointer}.exline:hover{background:#3b3935}.exline b{font-size:17px}
 .legend span{font-size:12px;color:var(--mute);white-space:nowrap}.legend .mb{color:#fff}.legend .mb.bg-inaccuracy{color:#2a2200}
 .sumtab td,.sumtab th{padding:4px 8px}.sumtab td.n{text-align:center;font-weight:600;min-width:46px}.sumtab tr.zero td.n{color:var(--mute);font-weight:400}
@@ -999,10 +1000,11 @@ function mistakeView(pz){
   if(!p){S.tr=null;return mistakeView(pz)}
   const flip=p.color==='b',c=new Chess(p.fen);
   const reveal=t.state==='right'||t.state==='answer';
-  const arrows=reveal?[{...parseUci(p.best),color:'#81b64c'}]:[];
+  const V=reveal?pzReplay(p,t):null;
+  const arrows=reveal?V.arrows:[];
   const sel=reveal?null:(t.sel||(t.hint?p.best.slice(0,2):null));
   h+=`<div class="row"><div>
-    <div class="boardwrap">${boardHTML(p.fen,flip,t.last,arrows,{click:t.state==='ask',sel,targets:t.targets})}</div></div>
+    <div class="boardwrap">${reveal?boardHTML(V.fen,flip,V.last,arrows,{}):boardHTML(p.fen,flip,t.last,arrows,{click:t.state==='ask',sel,targets:t.targets})}</div></div>
     <div class="side"><div class="card">${t.theme?`<div class="chips" style="margin:0 0 4px"><span class="chip on">${TACTICS.find(x=>x.k===t.theme).label}</span></div><div class="mute hint" style="margin-bottom:8px">${TACTICS.find(x=>x.k===t.theme).tip}</div>`:''}<div class="mute hint">Puzzle ${t.idx+1} of ${t.queue.length}${p.n>1?` · you’ve gone wrong here ${p.n} times`:''}</div>
     <h3 style="margin-top:6px">${p.color==='w'?'White':'Black'} to move: find the best move</h3>
     <div class="mute hint">From your game vs ${esc(p.g.opp)} · ${esc(p.g.opening)} · move ${Math.floor(p.i/2)+1}</div>`;
@@ -1013,12 +1015,46 @@ function mistakeView(pz){
     const th=puzzleThemes(p),tm=th.find(x=>x.k===t.theme)||th[0];
     const motif=tm?`<div class="coach ok">🎯 <b>${TACTICS.find(x=>x.k===tm.k).label}:</b> ${esc(tm.t)}</div>`:'';
     h+=`<div class="coach ${t.state==='right'?'ok':'bad'}">${t.state==='right'?t.msg:`The best move was <b class="c-best">${p.bestSan}</b>.`}</div>${motif}
-      <div class="mute hint" style="margin-bottom:6px">What happened in your game:</div>${coachBox(p.g,p.i+1,true)}
+      ${V.html}<details style="margin:8px 0"><summary class="mute hint" style="cursor:pointer">Written explanation</summary>${coachBox(p.g,p.i+1,true)}</details>
       <div class="pz-actions"><button class="primary" data-a="tnext">${t.idx+1>=t.queue.length?'Finish':'Next puzzle ›'}</button>
       <button data-a="open" data-i="${S.games.indexOf(p.g)}" data-k="${p.i+1}">Open game</button></div>`;
   }
   h+=`<div style="margin-top:10px"><a href="#" data-a="tquit" class="mute hint">End session</a></div></div></div></div>`;
   return h;
+}
+/* ---- visual replay after a puzzle: what you played, how it is punished, what to play instead ---- */
+function pzSteps(p,which){
+  const g=p.g;ensure(g);const mv=g.moves[p.i],ucis=[];
+  if(which==='yours'){
+    if(mv)ucis.push([mv.from+mv.to+(mv.promotion||''),'#ca3431']);
+    const reply=g.p[p.i+1]&&g.p[p.i+1].v;
+    (reply?reply.split(' ').slice(0,5):[]).forEach((u,k)=>ucis.push([u,k===0?'#e58f2a':'#9a9792']));
+  }else{
+    (p.before.v?p.before.v.split(' ').slice(0,6):[p.best]).forEach((u,k)=>ucis.push([u,k%2===0?'#81b64c':'#9a9792']));
+  }
+  const c=new Chess(p.fen),out=[];
+  for(const [u,col] of ucis){const m=c.move(parseUci(u));if(!m)break;out.push({from:m.from,to:m.to,san:m.san,fen:c.fen(),col,mine:m.color===p.color})}
+  return out;
+}
+function pzReplay(p,t){
+  const g=p.g,which=t.vw||'yours';
+  const steps=pzSteps(p,which),s=Math.max(0,Math.min(steps.length,t.vs||0)),nxt=steps[s];
+  const bar=(label,v,col)=>`<div class="wbar"><span>${label}</span><div><i style="width:${Math.round(v)}%;background:${col}"></i></div><b>${Math.round(v)}%</b></div>`;
+  const wb=winPct(povCp(g.p[p.i],p.color)),wa=winPct(povCp(g.p[p.i+1],p.color));
+  const chips=steps.map((st,k)=>`<button class="chip ${s===k+1?'on':''}" style="border-color:${st.col}" data-a="vstep" data-s="${k+1}">${st.mine?'You':'Opp'} ${esc(st.san)}</button>`).join('');
+  const mvName=st=>(st.mine?'your':'the opponent’s');
+  let cap;
+  if(!nxt)cap=s?'End of the line.':'';
+  else if(s===0)cap=which==='yours'?`In the game you played <b style="color:#ca3431">${esc(nxt.san)}</b> (red arrow). Tap ▶ to see what happens next.`:`The best move is <b class="c-best">${esc(nxt.san)}</b> (green arrow). Tap ▶ to follow the line.`;
+  else cap=`Next: <b style="color:${nxt.col}">${esc(nxt.san)}</b> (${mvName(nxt)} move).`;
+  if(s>0)cap=`<b>${esc(steps[s-1].san)}</b> played. `+cap;
+  const html=`<div class="chips" style="margin:6px 0"><button class="chip ${which==='yours'?'on':''}" data-a="vtab" data-k="yours">❌ What you played</button><button class="chip ${which==='best'?'on':''}" data-a="vtab" data-k="best">✅ Best move</button></div>
+    <div class="chips" style="margin:4px 0">${chips}</div>
+    <div class="ctl" style="margin:4px 0"><button data-a="vstep" data-s="${Math.max(0,s-1)}" ${s?'':'disabled'}>◀</button><button data-a="vstep" data-s="${Math.min(steps.length,s+1)}" ${s<steps.length?'':'disabled'}>▶</button><button data-a="vstep" data-s="0" ${s?'':'disabled'}>⟲</button></div>
+    <div class="coach" style="margin:6px 0">${cap}</div>
+    <div class="wbars">${bar('Before your move',wb,'#9a9792')}${bar('After '+esc(p.playedSan||'your move'),wa,wa<wb-4?'#ca3431':'#81b64c')}${bar('After best move',wb,'#81b64c')}</div>
+    <div class="mute hint" style="margin:2px 0 6px">Your chance to win the game (from your side).</div>`;
+  return {fen:s?steps[s-1].fen:p.fen,last:s?[steps[s-1].from,steps[s-1].to]:null,arrows:nxt?[{from:nxt.from,to:nxt.to,color:nxt.col}]:[],html};
 }
 function trainStart(all,theme){
   let pz=buildPuzzles();
@@ -1029,7 +1065,7 @@ function trainStart(all,theme){
   if(!list.length)return;
   S.tr={queue:list.map(p=>p.key),idx:0,n:0,right:0,retried:new Set(),theme:theme||null};resetPuzzle();
 }
-function resetPuzzle(){Object.assign(S.tr,{state:'ask',sel:null,targets:[],last:null,hint:false,counted:false,played:'',msg:''})}
+function resetPuzzle(){Object.assign(S.tr,{vw:null,vs:0,state:'ask',sel:null,targets:[],last:null,hint:false,counted:false,played:'',msg:''})}
 function curPuzzle(){return buildPuzzles().find(x=>x.key===S.tr.queue[S.tr.idx])}
 function updateProgress(p,success){
   const t=S.tr;if(t.counted)return;t.counted=true;t.n++;if(success)t.right++;
@@ -2807,6 +2843,10 @@ Object.assign(actions,{
   rushquit:()=>{clearInterval(S.rsT);S.rs=null;render()},
 });
 
+Object.assign(actions,{
+  vtab:d=>{S.tr.vw=d.k;S.tr.vs=0;render()},
+  vstep:d=>{S.tr.vs=+d.s;render()},
+});
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
   loadBook();
