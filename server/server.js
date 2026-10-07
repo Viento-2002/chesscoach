@@ -391,11 +391,41 @@ async function notifyAnalysisDone(name) {
     if (r.gone) { delete subs[rec.id]; saveSubs(); }
   }
 }
+// Sunday digest (opt-in): games, record and accuracy of the last seven days against the seven before.
+function weeklyDigest(name) {
+  const d = cache.get(name) || load(name), who = name.replace(/^li./, '').toLowerCase(), now = Date.now() / 1000;
+  const week = (from, to) => {
+    let n = 0, w = 0, dr = 0, l = 0, accs = [];
+    for (const g of Object.values(d.games)) {
+      if (g.rules !== 'chess' || g.end_time < from || g.end_time >= to) continue;
+      const mine = g.white.username.toLowerCase() === who, me = mine ? g.white : g.black;
+      n++; const k = me.result === 'win' ? 'w' : ['agreed', 'repetition', 'stalemate', 'insufficient', '50move', 'timevsinsufficient'].includes(me.result) ? 'd' : 'l';
+      if (k === 'w') w++; else if (k === 'd') dr++; else l++;
+      const a = d.an[g.url], acc = a && accuracyOf(g, a.p); if (acc) accs.push(mine ? acc.w : acc.b);
+    }
+    return { n, w, d: dr, l, acc: accs.length ? accs.reduce((x, y) => x + y, 0) / accs.length : null };
+  };
+  const cur = week(now - 7 * 864e2, now + 1), prev = week(now - 14 * 864e2, now - 7 * 864e2);
+  if (!cur.n) return { title: '📅 Your week in chess', body: 'No games this week. Ten minutes of puzzles keeps you sharp.' };
+  let body = `${cur.n} game${cur.n === 1 ? '' : 's'}: ${cur.w} won, ${cur.d} drawn, ${cur.l} lost.`;
+  if (cur.acc != null) {
+    body += ` Accuracy ${Math.round(cur.acc)}%`;
+    if (prev.acc != null) { const dd = Math.round(cur.acc - prev.acc); body += dd ? ` (${dd > 0 ? '+' : ''}${dd} vs last week)` : ' (same as last week)'; }
+    body += '.';
+  }
+  return { title: '📅 Your week in chess', body };
+}
+const DIGEST_ANYDAY = !!process.env.DIGEST_ANYDAY;
 async function reminderTick() {
   const now = Date.now();
   for (const rec of Object.values(subs)) {
     const local = new Date(now + rec.tz * 60000), day = isoDay(local);
     const mins = local.getUTCHours() * 60 + local.getUTCMinutes(), at = rec.hour * 60 + rec.min;
+    if (rec.digest && rec.user && rec.digestDay !== day && (DIGEST_ANYDAY || local.getUTCDay() === 0) && mins >= at && mins < at + 180 && now - (rec.updated || 0) <= 14 * 864e5) {
+      rec.digestDay = day; saveSubs();                                    // one digest per Sunday, within 3 hours after the chosen time
+      const r = await sendPush(rec, { ...weeklyDigest(rec.user), tag: 'digest-' + day, url: './' });
+      if (r.gone) { delete subs[rec.id]; saveSubs(); continue; }
+    }
     if (rec.sentDay === day || mins < at || mins >= at + 180) continue;   // once a day, within 3 hours after the chosen time
     if (rec.state && rec.state.lastTrain === day) continue;                // already trained today
     if (now - (rec.updated || 0) > 14 * 864e5) continue;                   // not opened for two weeks: stop reminding
@@ -428,6 +458,7 @@ async function handlePush(req, res, url, ip) {
     subs[id] = { id, sub: { endpoint: b.subscription.endpoint, keys: { p256dh: b.subscription.keys.p256dh, auth: b.subscription.keys.auth } }, user,
       hour: intIn(b.hour, 0, 23, 19), min: intIn(b.min, 0, 59, 0), tz: intIn(b.tz, -840, 840, 0), state: cleanState(b.state),
       notify: NOTIFY_MODES.includes(b.notify) ? b.notify : (old.notify || 'batch'), lastDone: old.lastDone || 0,
+      digest: typeof b.digest === 'boolean' ? b.digest : !!old.digest, digestDay: old.digestDay || null,
       sentDay: old.sentDay || null, created: old.created || now, updated: now };
     if (!old.id) skipTodayIfPassed(subs[id]);
     saveSubs(); return send(res, 200, { ok: true });
@@ -440,6 +471,7 @@ async function handlePush(req, res, url, ip) {
     if (b.hour != null) rec.hour = intIn(b.hour, 0, 23, rec.hour);
     if (b.min != null) rec.min = intIn(b.min, 0, 59, rec.min);
     if (NOTIFY_MODES.includes(b.notify)) rec.notify = b.notify;
+    if (typeof b.digest === 'boolean') rec.digest = b.digest;
     if (p === '/api/push/prefs' && (b.hour != null || b.min != null)) skipTodayIfPassed(rec); // a time that has passed starts tomorrow
     rec.updated = now; saveSubs(); return send(res, 200, { ok: true });
   }

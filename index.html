@@ -55,6 +55,8 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .sq.l{background:var(--light)}.sq.d{background:var(--dark)}
 .sq.hl::after{content:"";position:absolute;inset:0;background:rgba(255,235,60,.45)}
 .sq.sel::after{content:"";position:absolute;inset:0;background:rgba(20,120,200,.5);z-index:2}
+.sq.ok::after{content:"";position:absolute;inset:0;background:rgba(60,190,80,.6);z-index:2}
+.sq.no::after{content:"";position:absolute;inset:0;background:rgba(220,60,50,.6);z-index:2}
 .sq img{position:absolute;inset:0;width:100%;height:100%;z-index:1;pointer-events:none}
 .sq b{position:absolute;font-size:10px;color:#555;z-index:2;pointer-events:none}
 .sq b.f{right:2px;bottom:1px}.sq b.r{left:2px;top:1px}
@@ -81,7 +83,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .brow .bval{min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
 .chip{border-radius:999px;padding:5px 13px;min-height:34px}.chip.on{background:var(--accent);color:#10200a;border-color:var(--accent);font-weight:600}
-.seg{display:flex;gap:0;margin-bottom:12px}.seg button{flex:1;border-radius:0}.seg button:first-child{border-radius:8px 0 0 8px}.seg button:last-child{border-radius:0 8px 8px 0}
+.seg{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}.seg button{flex:1 1 auto;border-radius:8px}
 .seg button.on{background:var(--accent);color:#10200a;border-color:var(--accent);font-weight:600}
 .cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
 .big{font-size:30px;font-weight:700;line-height:1.1}
@@ -97,6 +99,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px}.why{margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}.why ul{margin:4px 0 0;padding-left:20px}.why li{margin:3px 0}
 body.shared header,body.shared nav{display:none}
 #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#3b3935;color:#fff;padding:10px 16px;border-radius:10px;z-index:99;box-shadow:0 4px 18px rgba(0,0,0,.45);max-width:90%;text-align:center}
+.exline{padding:8px 10px;border-radius:8px;background:var(--panel2);margin:6px 0;cursor:pointer}.exline:hover{background:#3b3935}.exline b{font-size:17px}
 .legend span{font-size:12px;color:var(--mute);white-space:nowrap}.legend .mb{color:#fff}.legend .mb.bg-inaccuracy{color:#2a2200}
 .sumtab td,.sumtab th{padding:4px 8px}.sumtab td.n{text-align:center;font-weight:600;min-width:46px}.sumtab tr.zero td.n{color:var(--mute);font-weight:400}
 .bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;display:flex;min-width:80px}
@@ -135,6 +138,7 @@ body.shared header,body.shared nav{display:none}
   <select id="months"><option value="1">Last month</option><option value="2" selected>Last 2 months</option><option value="3">Last 3 months</option><option value="6">Last 6 months</option><option value="12">Last 12 months</option></select>
   <button id="load" class="primary">Load games</button>
   <span id="status" class="mute"></span>
+  <div id="recent" style="width:100%"></div>
 </header>
 <nav id="tabs">
   <button data-tab="games" class="on">Games</button>
@@ -143,14 +147,17 @@ body.shared header,body.shared nav{display:none}
   <button data-tab="progress">Progress</button>
   <button data-tab="openings">Openings</button>
   <button data-tab="insights">Insights</button>
+  <button data-tab="scout">🕵 Scout</button>
+  <button data-tab="settings">⚙ Settings</button>
 </nav>
 <main id="view"></main>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="vendor/chess.min.js"></script>
 <script>
 'use strict';
 const SF_URL='engine/stockfish-18-lite-single.js';
-const PIECE=(c,t)=>`https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/cburnett/${c}${t.toUpperCase()}.svg`;
+const pieceUrl=(set,c,t)=>`https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/${set}/${c}${t.toUpperCase()}.svg`;
+const PIECE=(c,t)=>pieceUrl((typeof S!=='undefined'&&S.prefs&&S.prefs.pieces)||'cburnett',c,t);
 const VAL={p:1,n:3,b:3,r:5,q:9,k:0};
 const NAME={p:'pawn',n:'knight',b:'bishop',r:'rook',q:'queen',k:'king'};
 const CLASSES=['brilliant','great','best','excellent','good','book','inaccuracy','miss','mistake','blunder'];
@@ -165,7 +172,31 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
 
 const S={user:'',games:[],stored:[],byUrl:new Map(),meta:{synced:[]},train:{},tab:'games',sel:null,cur:0,flip:false,
-  expl:[],explColor:'white',depth:14,busy:false,stop:false,prog:null,tr:null,showImport:false,pgnDraft:'',impMsg:''};
+  expl:[],explColor:'white',depth:14,busy:false,stop:false,prog:null,tr:null,showImport:false,pgnDraft:'',impMsg:'',
+  prefs:{board:'green',pieces:'cburnett',sound:false},recent:[]};
+// looks: board colours, piece set, sound (kept on this device)
+const BOARDS={green:['#eeeed2','#769656','Green'],brown:['#f0d9b5','#b58863','Brown'],blue:['#dee3e6','#8ca2ad','Blue'],purple:['#efefef','#8877b7','Purple'],grey:['#e5e5e5','#8a8a8a','Grey']};
+const PIECE_SETS=[['cburnett','Classic'],['merida','Merida'],['alpha','Alpha'],['cardinal','Cardinal'],['staunty','Staunty'],['pixel','Pixel']];
+try{Object.assign(S.prefs,JSON.parse(ls.get('cc:prefs')||'{}'))}catch(e){}
+try{S.recent=JSON.parse(ls.get('cc:recent')||'[]').filter(k=>typeof k==='string').slice(0,6)}catch(e){}
+function applyPrefs(){
+  const b=BOARDS[S.prefs.board]||BOARDS.green;
+  document.documentElement.style.setProperty('--light',b[0]);document.documentElement.style.setProperty('--dark',b[1]);
+}
+applyPrefs();
+function savePrefs(){ls.set('cc:prefs',JSON.stringify(S.prefs))}
+let _ac=null;
+function snd(kind){ // short synthesised sounds (no files): only when switched on in Settings
+  if(!S.prefs.sound)return;
+  try{
+    _ac=_ac||new (window.AudioContext||window.webkitAudioContext)();const t=_ac.currentTime;
+    const tone=(f,d,at,type)=>{const o=_ac.createOscillator(),g=_ac.createGain();o.type=type||'sine';o.frequency.value=f;g.gain.setValueAtTime(0.0001,t+at);g.gain.exponentialRampToValueAtTime(0.16,t+at+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+at+d);o.connect(g);g.connect(_ac.destination);o.start(t+at);o.stop(t+at+d+0.03)};
+    if(kind==='move')tone(520,0.05,0,'triangle');
+    else if(kind==='good'){tone(660,0.09,0);tone(880,0.14,0.09)}
+    else if(kind==='bad')tone(170,0.24,0,'sawtooth');
+    else if(kind==='win')[523,659,784,1047].forEach((f,i)=>tone(f,0.13,i*0.1));
+  }catch(e){}
+}
 
 /* ---------- saved data (IndexedDB, per username) ---------- */
 const DB={
@@ -264,7 +295,11 @@ function ingest(raw,persist){
   if(persist)S.stored.push(raw.imported?raw:slim(raw));
   S.games.push(g);S.byUrl.set(raw.url,g);return true;
 }
-const sortGames=()=>S.games.sort((a,b)=>b.time-a.time);
+const sortGames=()=>{ // newest first; an open review must stay on the same game when new ones arrive
+  const open=S.sel!=null&&!S.shared?S.games[S.sel]:null;
+  S.games.sort((a,b)=>b.time-a.time);
+  if(open)S.sel=S.games.indexOf(open);
+};
 const MAX_ANALYSE=100; // bulk analysis only covers the newest games; older ones can still be opened and analysed one by one
 const recent=()=>S.games.slice(0,MAX_ANALYSE);
 
@@ -291,7 +326,9 @@ async function loadUser(name,sync,manual){
   render();
   if(pending.length){await prepareAll(pending);setStatus(`${S.games.length} saved games`);render()}
   tryOpenPending(); // opened from a notification: show that game as soon as it is among the saved ones
+  if(sync&&navigator.onLine===false){setStatus(`${S.games.length} saved games · offline (your reviews and training still work)`);if(S.games.length){rememberProfile(S.user);renderRecent()}return}
   if(sync&&!(await syncFromServer(false,manual)))await(isLi(S.user)?syncLichessDirect():syncGames()); // our server first; the site itself if the server is unreachable
+  if(S.games.length){rememberProfile(S.user);renderRecent()}
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
 const REV_V=6;
@@ -743,8 +780,9 @@ function boardHTML(fen,flip,last,arrows,o){
   for(let y=0;y<8;y++)for(let x=0;x<8;x++){
     const r=flip?7-y:y,f=flip?7-x:x;
     const sq='abcdefgh'[f]+(8-r),pc=grid[r][f],light=(r+f)%2===0;
-    h+=`<div class="sq ${light?'l':'d'}${last&&(sq===last[0]||sq===last[1])?' hl':''}${o.sel===sq?' sel':''}"${o.click?` data-a="tsq" data-sq="${sq}"`:''}>`;
-    if(x===0)h+=`<b class="r">${8-r}</b>`;if(y===7)h+=`<b class="f">${'abcdefgh'[f]}</b>`;
+    const mk=o.marks&&o.marks.find(m=>m.sq===sq);
+    h+=`<div class="sq ${light?'l':'d'}${last&&(sq===last[0]||sq===last[1])?' hl':''}${o.sel===sq?' sel':''}${mk?' '+mk.cls:''}"${o.click?` data-a="tsq" data-sq="${sq}"`:''}>`;
+    if(!o.nocoords){if(x===0)h+=`<b class="r">${8-r}</b>`;if(y===7)h+=`<b class="f">${'abcdefgh'[f]}</b>`}
     if(pc)h+=`<img src="${PIECE(pc===pc.toUpperCase()?'w':'b',pc)}" alt="">`;
     if(o.badge&&o.badge.sq===sq)h+=badge(o.badge.cls,true);
     if(o.targets&&o.targets.includes(sq))h+='<i class="tg"></i>';
@@ -766,6 +804,7 @@ function boardHTML(fen,flip,last,arrows,o){
 const curG=()=>S.shared?S.shared.g:S.games[S.sel]; // the game being reviewed: one of yours, or a shared one
 function render(){
   document.body.classList.toggle('shared',!!S.shared);
+  if(S.ex){$('#view').innerHTML=exploreView();return}
   if(S.shared){$('#view').innerHTML=sharedView();return}
   const pz=S.user?buildPuzzles():[],now=Date.now();
   const due=pz.filter(p=>!S.train[p.key]||S.train[p.key].due<=now).length;
@@ -774,8 +813,9 @@ function render(){
     if(b.dataset.tab==='train')b.textContent='Train'+(due?` (${due})`:'');
   });
   const v=$('#view');
-  if(!S.user){v.innerHTML=welcomeView();return}
-  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='progress'?progressView():S.tab==='openings'?openingsView():insightsView();
+  if(!S.user){v.innerHTML=welcomeView();renderRecent();return}
+  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='progress'?progressView():S.tab==='openings'?openingsView():S.tab==='scout'?scoutView():S.tab==='settings'?settingsView():insightsView();
+  renderRecent();
 }
 const dateStr=t=>t?new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'}):'–';
 
@@ -830,7 +870,7 @@ function gamesView(){
 function reviewView(){
   const g=curG();loadPieceImgs(); // (the share image needs the piece pictures ready the moment you tap)
   let h=`<div class="ctl">${S.shared?'':'<button data-a="back">‹ All games</button>'}<button data-a="flip">⇅ Flip</button>
-    ${g.rev?`<button data-a="sharelink" ${gidOf(g.url)&&(S.shared||S.server)?'':'disabled title="Only games stored on the ChessCoach server can be shared as a link"'}>🔗 Share link</button><button data-a="shareimg">🖼 Share image</button>`:''}
+    ${g.rev?`<button data-a="sharelink" ${gidOf(g.url)&&(S.shared||S.server)?'':'disabled title="Only games stored on the ChessCoach server can be shared as a link"'}>🔗 Share link</button><button data-a="shareimg">🖼 Share image</button><button data-a="exportone">⬇ PGN</button>`:''}${g.fens&&g.rev?`<button data-a="explore">🔬 Explore</button>`:''}
     ${/^https?:/.test(g.url)?`<a class="mute" href="${esc(g.url)}" target="_blank" rel="noopener">view on ${/lichess\.org/.test(g.url)?'lichess':'chess.com'} ↗</a>`:''}</div>`;
   if(!g.rev){
     return h+`<div class="card"><h3>${esc(g.white.username)} vs ${esc(g.black.username)}</h3>
@@ -989,7 +1029,7 @@ function resetPuzzle(){Object.assign(S.tr,{state:'ask',sel:null,targets:[],last:
 function curPuzzle(){return buildPuzzles().find(x=>x.key===S.tr.queue[S.tr.idx])}
 function updateProgress(p,success){
   const t=S.tr;if(t.counted)return;t.counted=true;t.n++;if(success)t.right++;
-  logTrain('puzzle',success);
+  logTrain('puzzle',success);snd(success?'good':'bad');
   const pr=S.train[p.key]||{box:0,due:0,seen:0,ok:0};
   pr.seen++;
   if(success){pr.ok++;pr.box=Math.min(5,pr.box+1);pr.due=Date.now()+DAYS[pr.box]*864e5}
@@ -1148,6 +1188,8 @@ const actions={
   tstartall:()=>{trainStart(true);render()},
   tquit:()=>{S.tr=null;render()},
   tsq:d=>{
+    if(S.ex){exTap(d.sq);return}
+    if(S.trainMode==='vision'&&S.vis){visTap(d.sq);return}
     if(S.trainMode==='openings'&&S.ot){drillTap(d.sq);return}
     if(S.trainMode==='endgames'&&S.eg){egTap(d.sq);return}
     const t=S.tr;if(!t||t.state!=='ask')return;
@@ -1169,6 +1211,11 @@ document.addEventListener('click',e=>{
   const tab=e.target.closest('#tabs button');if(tab){S.tab=tab.dataset.tab;S.sel=null;render()}
 });
 document.addEventListener('change',e=>{
+  if(e.target.id==='digestOn'){
+    const P=S.push;P.digest=e.target.checked;ls.set('cc:digest',P.digest?'1':'0');
+    if(P.sub)pushPost('prefs',{endpoint:P.sub.endpoint,digest:P.digest}).then(()=>{P.msg=P.digest?'You will get a summary of your week every Sunday, at your reminder time.':'No more weekly summaries.';P.ok=true;render()}).catch(er=>{P.msg=er.message;P.ok=false;render()});
+    return;
+  }
   if(e.target.id==='depth')S.depth=+e.target.value;
   if(e.target.id==='drOpening'){S.drSel.label=e.target.value;S.drSel.variation='';render()}
   if(e.target.id==='drVar'){S.drSel.variation=e.target.value;render()}
@@ -1428,8 +1475,8 @@ function goalView(){
 function trainView(pz){
   const m=S.trainMode;
   const tab=(k,l)=>`<button class="${m===k?'on':''}" data-a="tmode" data-m="${k}">${l}</button>`;
-  return streakBanner()+`<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}</div>`
-    +(m==='openings'?drillView():m==='endgames'?egView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
+  return streakBanner()+`<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}${tab('vision','Vision')}</div>`
+    +(m==='openings'?drillView():m==='endgames'?egView():m==='vision'?visView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
 }
 function famSet(label,variation){
   if(!BOOK||!BOOK.f[label])return null;
@@ -1488,6 +1535,7 @@ function drillMove(from,to){
   o.sel=null;o.targets=[];
   if(hit){
     if(!o.counted){o.counted=true;o.n++;o.right++;cardUpdate(ck,true)}
+    snd('good');
     c.move(hit.san);o.last=[from,to];drillName(o);
     if(o.n>=14){drillEnd(o);render();return}
     drillAdvance();render();return;
@@ -1498,7 +1546,7 @@ function drillMove(from,to){
   const after=new Chess(fen);after.move(t.san);
   const other=inBookPos(after.fen())?lineName(after.fen()):null;
   o.msg=`<b>${t.san}</b> is not ${esc(o.label)} theory here. ${inBookPos(after.fen())?`It is a known move in another opening${other?` (${esc(niceName(other))})`:''}.`:'It leaves known theory.'}`;
-  o.state='wrong';o.last=[from,to];render();
+  o.state='wrong';o.last=[from,to];snd('bad');render();
 }
 function drillMenu(){
   if(!BOOK)return '<div class="card"><h3>Opening drills</h3><p class="mute" style="margin:0">Loading the opening database…</p></div>';
@@ -1806,7 +1854,7 @@ async function egStart(id){
 function egFinish(g,success,msg){
   g.state='done';g.sel=null;g.targets=[];
   const stars=!success?0:g.mistakes===0?3:g.mistakes<=2?2:1;
-  g.over={success,msg,stars};
+  g.over={success,msg,stars};snd(success?'win':'bad');
   egCard(g.def.id,success&&g.mistakes<=1,g.moves);
   try{eng.send('setoption name MultiPV value 2')}catch(e){}
   render();
@@ -1825,11 +1873,12 @@ async function egMove(from,to){
   const u0=egU(g,g.e0),u1=egU(g,e1);
   const ok=hold?(u1.m==null?u1.c>=-60:u1.m>0):(u1.m>0||(u1.m==null&&u1.c>=(g.def.win||300)));
   if(!ok){ // the move spoils the result: take it back and say why
-    c.undo();g.moves--;g.mistakes++;g.state='wrong';
+    c.undo();g.moves--;g.mistakes++;g.state='wrong';snd('bad');
     const best=g.e0.b?egSan(before,g.e0.b):'?';
     g.msg=hold?`That loses the draw (${egShow(u0)} → ${egShow(u1)}). The engine would play <b>${best}</b>.`:`That throws away the win (${egShow(u0)} → ${egShow(u1)}). Better was <b>${best}</b>.`;
     render();return;
   }
+  snd('move');
   g.msg=(u0.m>0&&u1.m>0&&u1.m>u0.m-1)?`Still winning, but mate in ${u0.m} was available (a faster route).`:'✓ Good move.';
   if(mv.promotion&&g.def.goal==='promote')return egFinish(g,true,'You promoted the pawn and the win is safe! 🎉');
   if(g.def.goal==='win'&&!c.fen().split(' ')[0].includes(g.user==='w'?'p':'P'))return egFinish(g,true,'You stopped the pawn, and the win is safe! 🎉');
@@ -2031,7 +2080,7 @@ const localISO=ms=>{const d=new Date(ms);return `${d.getFullYear()}-${pad2(d.get
 const isStandalone=()=>(window.matchMedia&&matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true;
 const isIOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const b64key=s=>{const raw=atob((s+'='.repeat((4-s.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(raw,c=>c.charCodeAt(0))};
-S.push={ready:false,supported:false,needInstall:false,perm:'default',sub:null,hour:19,min:0,notify:'batch',busy:false,msg:'',ok:true};
+S.push={ready:false,supported:false,needInstall:false,perm:'default',sub:null,hour:19,min:0,notify:'batch',digest:false,busy:false,msg:'',ok:true};
 const pushState=()=>({lastTrain:S.log.length?localISO(S.log[S.log.length-1].t):null,streak:trainStreak(),due:S.user?buildPuzzles().filter(isDue).length:0});
 async function pushPost(what,body){
   const r=await fetch('api/push/'+what,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -2047,6 +2096,7 @@ async function pushInit(){
   try{const reg=await navigator.serviceWorker.ready;P.sub=await reg.pushManager.getSubscription()}catch(e){}
   try{const s=JSON.parse(ls.get('cc:remind')||'null');if(s){P.hour=s.hour;P.min=s.min}}catch(e){}
   if(['off','batch','each'].includes(ls.get('cc:notify')))P.notify=ls.get('cc:notify');
+  P.digest=ls.get('cc:digest')==='1';
   navigator.serviceWorker.addEventListener('message',e=>{ // a tapped notification asks the open app to show a game
     if(e.data&&e.data.type==='open'){try{const h=new URL(e.data.url,location.href).hash;if(h&&h!==location.hash)location.hash=h}catch(err){}}
   });
@@ -2066,7 +2116,7 @@ async function pushEnable(){
     if(perm!=='granted')throw new Error('Notifications are blocked. Allow them for ChessCoach in your phone or browser settings, then try again.');
     const reg=await navigator.serviceWorker.ready,{key}=await (await fetch('api/push/key')).json();
     const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64key(key)});
-    await pushPost('subscribe',{subscription:sub.toJSON(),user:S.user,hour:P.hour,min:P.min,tz:-new Date().getTimezoneOffset(),notify:P.notify,state:pushState()});
+    await pushPost('subscribe',{subscription:sub.toJSON(),user:S.user,hour:P.hour,min:P.min,tz:-new Date().getTimezoneOffset(),notify:P.notify,digest:P.digest,state:pushState()});
     P.sub=sub;P.msg='Reminders are on. Use "Send a test" to see how one looks.';P.ok=true;
   }catch(e){P.msg=e.message||String(e);P.ok=false}
   P.busy=false;render();
@@ -2090,6 +2140,7 @@ function reminderCard(){
   else h+=`<p style="margin-top:0">Reminders are <b style="color:var(--accent)">on</b>: one a day at ${time}, if you have not trained yet.</p>
     <div class="ctl"><label class="mute" style="flex:1 1 100%">Tell me when my analysis is finished:
       <select id="notifyMode" style="margin-top:6px;width:100%"><option value="batch" ${P.notify==='batch'?'selected':''}>After a batch of games (3 or more)</option><option value="each" ${P.notify==='each'?'selected':''}>After every new game</option><option value="off" ${P.notify==='off'?'selected':''}>Never</option></select></label></div>
+    <div class="ctl"><label class="mute"><input type="checkbox" id="digestOn" ${P.digest?'checked':''} style="width:auto;min-height:0;margin-right:8px">Sunday summary of my week (games, record, accuracy)</label></div>
     <div class="ctl"><button data-a="pushtest" ${P.busy?'disabled':''}>Send a test</button><button data-a="pushoff" ${P.busy?'disabled':''}>Turn off</button></div>`;
   if(P.msg)h+=`<div class="coach ${P.ok?'ok':'bad'}" style="margin:10px 0 0">${esc(P.msg)}</div>`;
   return h+'</div>';
@@ -2176,11 +2227,12 @@ async function renderShareImage(g,k){
   const BX=60,BY=205,SQ=120,grid=boardOfFen(g.fens[k]),mv=k>0?g.moves[k-1]:null;
   for(let yy=0;yy<8;yy++)for(let xx=0;xx<8;xx++){
     const r=flip?7-yy:yy,f=flip?7-xx:xx,px=BX+xx*SQ,py=BY+yy*SQ,sq='abcdefgh'[f]+(8-r);
-    x.fillStyle=(r+f)%2===0?'#eeeed2':'#769656';x.fillRect(px,py,SQ,SQ);
+    const bc=BOARDS[S.prefs.board]||BOARDS.green;
+    x.fillStyle=(r+f)%2===0?bc[0]:bc[1];x.fillRect(px,py,SQ,SQ);
     if(mv&&(sq===mv.from||sq===mv.to)){x.fillStyle='rgba(255,235,60,.45)';x.fillRect(px,py,SQ,SQ)}
     const ch=grid[r][f];
     if(ch!=='.'){const im=imgs[(ch===ch.toUpperCase()?'w':'b')+ch.toUpperCase()];if(im)x.drawImage(im,px,py,SQ,SQ)}
-    x.font=`600 20px ${F}`;x.fillStyle=(r+f)%2===0?'#769656':'#eeeed2';
+    x.font=`600 20px ${F}`;x.fillStyle=(r+f)%2===0?bc[1]:bc[0];
     if(xx===0){x.textAlign='left';x.fillText(String(8-r),px+6,py+16)}
     if(yy===7){x.textAlign='right';x.fillText('abcdefgh'[f],px+SQ-6,py+SQ-14)}
   }
@@ -2270,6 +2322,267 @@ addEventListener('hashchange',()=>{
   else if(o){S.pendingOpen=o;if(!tryOpenPending()&&S.games.length){toast('That game is not among your loaded games.');S.pendingOpen=null;try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}}
   else if(S.shared)leaveShared();
 });
+
+/* ======================================================================
+   Settings, export, recent profiles
+   ====================================================================== */
+function settingsView(){
+  const P=S.prefs,n=S.games.filter(g=>g.rev).length;
+  const mini=(l,d)=>`<span style="display:inline-grid;grid-template-columns:12px 12px;border-radius:3px;overflow:hidden"><i style="width:12px;height:12px;background:${l}"></i><i style="width:12px;height:12px;background:${d}"></i><i style="width:12px;height:12px;background:${d}"></i><i style="width:12px;height:12px;background:${l}"></i></span>`;
+  const boards=Object.entries(BOARDS).map(([k,[l,d,name]])=>`<button class="chip ${P.board===k?'on':''}" data-a="setboard" data-k="${k}" style="display:inline-flex;align-items:center;gap:8px">${mini(l,d)}${name}</button>`).join('');
+  const sets=PIECE_SETS.map(([k,name])=>`<button class="chip ${P.pieces===k?'on':''}" data-a="setpieces" data-k="${k}" style="display:inline-flex;align-items:center;gap:4px"><img src="${pieceUrl(k,'w','N')}" width="28" height="28" alt=""><img src="${pieceUrl(k,'b','Q')}" width="28" height="28" alt="">${name}</button>`).join('');
+  return `<div class="card"><h3>Looks</h3>
+      <div class="mute hint">Board colours</div><div class="chips">${boards}</div>
+      <div class="mute hint" style="margin-top:10px">Pieces</div><div class="chips">${sets}</div>
+      <div class="mute hint" style="margin-top:10px">Sound (move, right and wrong answers in the drills and puzzles)</div>
+      <div class="chips"><button class="chip ${P.sound?'on':''}" data-a="togglesound">${P.sound?'🔊 Sound on':'🔈 Sound off'}</button></div></div>
+    <div class="card"><h3>Your data</h3>
+      <p class="mute" style="margin-top:0">Download your reviewed games as a PGN file with Stockfish evaluations, clock times and !/? symbols. It opens in the lichess analysis board, ChessBase, SCID and other tools.</p>
+      <div class="pz-actions"><button class="primary" data-a="exportall" ${n?'':'disabled'}>⬇ Download ${n} analysed game${n===1?'':'s'} (PGN)</button></div>
+      <p class="mute hint" style="margin-bottom:0">Saved on this device: games, analysis, training progress. <a href="#" data-a="wipe">Delete my data</a></p></div>
+    <div class="card"><h3>About</h3><p class="mute" style="margin:0">ChessCoach reviews your chess.com and lichess games with Stockfish 18 and turns your mistakes into training. Free and open source: <a href="https://github.com/Viento-2002/chesscoach" target="_blank" rel="noopener">github.com/Viento-2002/chesscoach</a>.
+      Opening names from the lichess openings database (CC0); piece sets from lichess; engine: Stockfish (GPLv3).</p></div>`;
+}
+function rememberProfile(key){
+  if(!key)return;
+  S.recent=[key,...S.recent.filter(k=>k.toLowerCase()!==key.toLowerCase())].slice(0,6);
+  ls.set('cc:recent',JSON.stringify(S.recent));
+}
+function renderRecent(){
+  const el=$('#recent');if(!el)return;
+  const list=S.recent.filter(k=>k.toLowerCase()!==String(S.user||'').toLowerCase());
+  el.innerHTML=list.length?`<div class="chips" style="margin:4px 0 0"><span class="mute hint" style="align-self:center">Switch to</span>${list.map(k=>`<button class="chip" data-a="recent" data-k="${esc(k)}">${esc(plainName(k))}${isLi(k)?' <span class="mute hint">lichess</span>':''}</button>`).join('')}</div>`:'';
+}
+/* ---- annotated PGN: evaluations, clocks, !/? symbols and comments ---- */
+const pgnClock=s=>`${Math.floor(s/3600)}:${pad2(Math.floor(s%3600/60))}:${pad2(Math.floor(s%60))}`;
+function annotatedPgn(g){
+  const hdr=(g.pgn.match(/^(?:\[[^\n]*\]\r?\n)+/)||[''])[0].trimEnd();
+  const NAG={brilliant:'$3',great:'$1',inaccuracy:'$6',miss:'$2',mistake:'$2',blunder:'$4'},clk=clocksOf(g),R=g.rev,P=g.p,out=[];
+  const owner=(g.me==='white'?g.white:g.black).username;
+  const named=(s,mine)=>String(s).replace(/\{(You|you|your|Your)\}/g,(_,w)=>{const who=mine?owner:(g.me==='white'?g.black:g.white).username;return /^[Yy]our$/.test(w)?who+'’s':who});
+  for(let i=0;i<g.moves.length;i++){
+    const m=g.moves[i],x=R&&R.moves[i],bits=[];
+    let s=(i%2===0?`${i/2+1}. `:`${Math.floor(i/2)+1}... `)+m.san;   // black moves need their number after a comment
+    if(x&&NAG[x.cls])s+=' '+NAG[x.cls];
+    if(P&&P[i+1]){const e=P[i+1];bits.push('[%eval '+(e.m!=null?'#'+e.m:(e.c/100).toFixed(2))+']')}
+    if(clk&&clk[i]!=null)bits.push('[%clk '+pgnClock(clk[i])+']');
+    if(x){
+      let t='';
+      if(x.cls==='book'&&x.info&&x.info.book)t='Theory: '+niceName(x.info.book);
+      else if(['inaccuracy','miss','mistake','blunder'].includes(x.cls)){
+        t=`${LABEL[x.cls]}.`+(x.bestSan?` Better was ${x.bestSan}.`:'');
+        if(x.info&&x.info.why&&x.info.why[0])t+=' '+named(x.info.why[0],m.color===g.myc);
+      }else if(x.cls==='brilliant'||x.cls==='great')t=LABEL[x.cls]+'.';
+      if(t)bits.push(t.replace(/[{}]/g,''));
+    }
+    out.push(bits.length?`${s} { ${bits.join(' ')} }`:s);
+  }
+  const res=headersOf(g.pgn).Result||'*';
+  return `${hdr}${R?`\n[Annotator "ChessCoach (Stockfish 18, depth ${g.depth||'?'})"]`:''}\n\n${out.join(' ')} ${res}\n`;
+}
+function downloadText(name,text){
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'application/x-chess-pgn'}));a.download=name;
+  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+Object.assign(actions,{
+  setboard:d=>{S.prefs.board=d.k;savePrefs();applyPrefs();render()},
+  setpieces:d=>{S.prefs.pieces=d.k;savePrefs();_pieceP=null;render()},
+  togglesound:()=>{S.prefs.sound=!S.prefs.sound;savePrefs();snd('good');render()},
+  exportall:()=>{
+    const list=S.games.filter(g=>g.rev);if(!list.length)return;
+    downloadText(`chesscoach-${plainName(S.user)}-${localISO(Date.now())}.pgn`,list.map(annotatedPgn).join('\n'));toast(`${list.length} games downloaded`);
+  },
+  exportone:()=>{const g=curG();if(!g||!g.rev)return;downloadText(`${g.white.username}-vs-${g.black.username}.pgn`.replace(/[^\w.-]+/g,'_'),annotatedPgn(g));toast('PGN downloaded')},
+  recent:d=>{loadUser(d.k,true,true).catch(e=>showErr('loading',e))},
+});
+
+/* ======================================================================
+   Analysis board: play any moves from a position and see Stockfish's top lines
+   ====================================================================== */
+Object.assign(S,{ex:null,vis:null});
+let _engQ=Promise.resolve();
+const engineJob=fn=>{const p=_engQ.then(fn,fn);_engQ=p.catch(()=>{});return p}; // one search at a time on the shared engine
+function searchLines(fen,depth,ms){ // top lines (MultiPV is set by the caller) as [{t,v,pv:[uci],d}]
+  return new Promise(res=>{
+    const lines={};
+    eng.set(l=>{
+      if(l.startsWith('info')&&l.includes(' score ')&&!/bound/.test(l)){
+        const m=l.match(/score (cp|mate) (-?\d+)/),pv=l.match(/ pv (.+)$/),mp=l.match(/ multipv (\d+)/),d=l.match(/ depth (\d+)/);
+        if(m)lines[mp?+mp[1]:1]={t:m[1],v:+m[2],pv:pv?pv[1].trim().split(' ').slice(0,10):[],d:d?+d[1]:0};
+      }else if(l.startsWith('bestmove'))res(Object.entries(lines).sort((a,b)=>a[0]-b[0]).map(x=>x[1]));
+    });
+    eng.send('position fen '+fen);eng.send(`go depth ${depth} movetime ${ms||4000}`);
+  });
+}
+async function exSearch(){
+  const ex=S.ex;if(!ex)return;
+  const token=++ex.token;ex.lines=[];
+  if(ex.chess.game_over()){ex.thinking=false;render();return}
+  if(S.busy){ex.msg='Stop the running analysis first: the engine is busy.';ex.thinking=false;render();return}
+  ex.msg='';ex.thinking=true;render();
+  const fen=ex.chess.fen(),depth=ex.depth;
+  const lines=await engineJob(async()=>{
+    if(S.ex!==ex||token!==ex.token)return null; // you already moved on
+    await getEngine();eng.send('setoption name MultiPV value 3');
+    try{return await searchLines(fen,depth,depth>=20?9000:4000)}finally{eng.send('setoption name MultiPV value 2')}
+  });
+  if(!lines||S.ex!==ex||token!==ex.token)return;
+  ex.lines=lines;ex.thinking=false;render();
+}
+function lineSan(fen,pv,max){const c=new Chess(fen),out=[];for(const u of pv.slice(0,max)){const m=c.move(parseUci(u));if(!m)break;out.push(m.san)}return out}
+function exploreView(){
+  const ex=S.ex,c=ex.chess,fen=c.fen(),flip=ex.flip,sg=c.turn()==='w'?1:-1;
+  const whiteCp=l=>l.t==='mate'?(l.v*sg>0?10000:-10000):l.v*sg;
+  const evShow=l=>l.t==='mate'?(l.v*sg>0?'M':'-M')+Math.abs(l.v):(whiteCp(l)>=0?'+':'')+(whiteCp(l)/100).toFixed(1);
+  const top=ex.lines[0],wp=top?winPct(whiteCp(top)):50;
+  const arrows=top&&top.pv[0]?[{...parseUci(top.pv[0]),color:'#81b64c'}]:[];
+  const over=c.in_checkmate()?`Checkmate: ${c.turn()==='w'?'Black':'White'} wins.`:c.in_stalemate()?'Stalemate: a draw.':c.in_draw()?'A draw.':'';
+  const book=lineName(fen);
+  let h=`<div class="ctl"><button data-a="exback">‹ Back to review</button><button data-a="exflip">⇅ Flip</button><button data-a="exundo" ${ex.hist.length?'':'disabled'}>↶ Undo</button><button data-a="exreset" ${ex.hist.length?'':'disabled'}>⟲ Reset</button></div>
+    <div class="row"><div><div class="boardwrap"><div class="evalbar"><div style="${flip?'top':'bottom'}:0;height:${wp}%"></div></div>${boardHTML(fen,flip,ex.last,arrows,{click:true,sel:ex.sel,targets:ex.targets})}</div>
+    <div class="mute hint" style="margin-top:6px">${c.turn()==='w'?'White':'Black'} to move${book?` · 📖 ${esc(niceName(book))}`:''}</div></div>
+    <div class="side"><div class="card"><h3>🔬 Analysis board</h3><div class="mute hint" style="margin-bottom:8px">Move the pieces to try ideas. Stockfish shows its three best lines for the position on the board; tap a line to play its first move.</div>`;
+  if(over)h+=`<div class="coach">${over}</div>`;
+  else if(ex.msg)h+=`<div class="coach bad">${esc(ex.msg)}</div>`;
+  else if(ex.thinking)h+='<div class="coach">Stockfish is thinking…</div>';
+  else if(ex.lines.length){
+    h+=ex.lines.map((l,i)=>`<div class="exline" data-a="exline" data-i="${i}"><b class="${i===0?'c-best':''}">${evShow(l)}</b> <span class="mute hint">depth ${l.d}</span><div>${esc(lineSan(fen,l.pv,8).join(' '))}</div></div>`).join('');
+    h+=`<div class="ctl"><button data-a="exdeeper">Depth ${ex.depth} · think deeper ▲</button></div>`;
+  }
+  if(ex.hist.length)h+=`<div class="mute hint" style="margin-top:8px">Your moves: ${esc(ex.hist.join(' '))}</div>`;
+  return h+'</div></div></div>';
+}
+function exTap(sq){
+  const ex=S.ex,c=ex.chess,pc=c.get(sq);
+  if(ex.sel&&ex.targets.includes(sq)){
+    const mv=c.move({from:ex.sel,to:sq,promotion:'q'});ex.sel=null;ex.targets=[];
+    if(mv){ex.hist.push(mv.san);ex.last=[mv.from,mv.to];snd('move');render();exSearch()}
+    return;
+  }
+  if(pc&&pc.color===c.turn()){ex.sel=sq;ex.targets=c.moves({square:sq,verbose:true}).map(m=>m.to)}else{ex.sel=null;ex.targets=[]}
+  render();
+}
+Object.assign(actions,{
+  explore:()=>{
+    const g=curG();if(!g)return;
+    S.ex={g,chess:new Chess(g.fens[S.cur]),start:g.fens[S.cur],hist:[],flip:S.flip!==(g.me==='black'),lines:[],thinking:false,depth:14,token:0,msg:'',sel:null,targets:[],
+      last:S.cur>0?[g.moves[S.cur-1].from,g.moves[S.cur-1].to]:null};
+    render();scrollTo(0,0);exSearch();
+  },
+  exback:()=>{S.ex=null;render()},
+  exflip:()=>{S.ex.flip=!S.ex.flip;render()},
+  exundo:()=>{const ex=S.ex;if(!ex.hist.length)return;ex.chess.undo();ex.hist.pop();ex.last=null;ex.sel=null;ex.targets=[];exSearch()},
+  exreset:()=>{const ex=S.ex;ex.chess=new Chess(ex.start);ex.hist=[];ex.last=null;ex.sel=null;ex.targets=[];exSearch()},
+  exdeeper:()=>{const ex=S.ex;ex.depth=ex.depth>=20?14:ex.depth+(ex.depth<18?4:2);exSearch()},
+  exline:d=>{const ex=S.ex,l=ex.lines[+d.i];if(!l||!l.pv[0])return;const mv=ex.chess.move(parseUci(l.pv[0]));if(mv){ex.hist.push(mv.san);ex.last=[mv.from,mv.to];snd('move');exSearch()}},
+});
+
+/* ======================================================================
+   Vision trainer: know the board without looking at the coordinates
+   ====================================================================== */
+const VIS_SECONDS=30;
+const randSq=not=>{let s;do{s='abcdefgh'[Math.floor(Math.random()*8)]+(1+Math.floor(Math.random()*8))}while(s===not);return s};
+const isLightSq=s=>('abcdefgh'.indexOf(s[0])+ +s[1])%2===0; // a1 is dark, h1 is light
+const visBest=m=>+(ls.get('cc:vis:'+m)||0);
+function visStart(mode){
+  clearInterval(S.visT);
+  S.vis={mode,end:Date.now()+VIS_SECONDS*1000,score:0,miss:0,flip:Math.random()<.5,target:randSq(),state:'run',marks:null,best:visBest(mode)};
+  S.visT=setInterval(visTick,250);render();
+}
+function visTick(){
+  const v=S.vis;if(!v||v.state!=='run'){clearInterval(S.visT);return}
+  const el=$('#visTime');if(el)el.textContent=Math.max(0,Math.ceil((v.end-Date.now())/1000))+'s';
+  if(Date.now()>=v.end)visEnd();
+}
+function visEnd(){
+  const v=S.vis;if(!v||v.state==='done')return;
+  clearInterval(S.visT);v.state='done';v.marks=null;
+  v.newBest=v.score>v.best;if(v.newBest)ls.set('cc:vis:'+v.mode,String(v.score));
+  logTrain('vision',true);snd(v.newBest?'win':'good');render();
+}
+function visAnswer(ok,marks){
+  const v=S.vis;if(ok){v.score++;snd('good')}else{v.miss++;snd('bad')}
+  const old=v.target;v.target=randSq(old);v.marks=marks;render();
+  setTimeout(()=>{if(S.vis===v&&v.marks===marks){v.marks=null;if(S.trainMode==='vision')render()}},350);
+}
+function visTap(sq){
+  const v=S.vis;if(!v||v.state!=='run'||v.mode!=='coords')return;
+  visAnswer(sq===v.target,[{sq:v.target,cls:'ok'},...(sq===v.target?[]:[{sq,cls:'no'}])]);
+}
+function visView(){
+  const v=S.vis;
+  if(!v){
+    const card=(m,t,d)=>`<div class="brow" style="grid-template-columns:1fr auto;align-items:center;padding:8px 0;border-top:1px solid var(--line)"><div><b>${t}</b><div class="mute hint">${d}</div><div class="mute hint">Your best: <b>${visBest(m)}</b> in ${VIS_SECONDS} seconds</div></div><button class="primary" data-a="visstart" data-m="${m}">Start</button></div>`;
+    return `<div class="card"><h3>Vision trainer</h3><p class="mute" style="margin:0">Strong players see the board without counting squares. ${VIS_SECONDS} seconds per round: score as many as you can. It counts as training for your streak.</p></div>
+      <div class="card">${card('coords','Find the square','A square name appears (like e4). Tap it on the empty board. The coordinates are hidden.')}${card('color','Light or dark?','Is the square light or dark? Useful for bishops, pawn races and spotting skewers.')}</div>`;
+  }
+  if(v.state==='done'){
+    const tot=v.score+v.miss;
+    return `<div class="card"><h3>${v.newBest?'🏆 New best!':'Time!'}</h3><div class="cards" style="margin:0"><div class="stat"><div class="mute">Correct</div><div class="big">${v.score}</div></div>
+      <div class="stat"><div class="mute">Accuracy</div><div class="big">${tot?pct(v.score,tot):0}%</div><div class="mute hint">${v.miss} wrong</div></div><div class="stat"><div class="mute">Best</div><div class="big">${Math.max(v.best,v.score)}</div></div></div>
+      <div class="pz-actions"><button class="primary" data-a="visstart" data-m="${v.mode}">Play again</button><button data-a="visquit">Back</button></div></div>`;
+  }
+  const left=Math.max(0,Math.ceil((v.end-Date.now())/1000));
+  let h=`<div class="card" style="display:flex;align-items:center;gap:14px"><div style="flex:1"><div class="mute hint">${v.mode==='coords'?'Tap the square':'Is this square light or dark?'}</div><div class="big" style="letter-spacing:2px">${v.target}</div></div>
+    <div style="text-align:center"><div class="mute hint">Time</div><div class="big" id="visTime">${left}s</div></div><div style="text-align:center"><div class="mute hint">Score</div><div class="big">${v.score}</div></div></div>`;
+  if(v.mode==='coords')h+=`<div class="boardwrap">${boardHTML('8/8/8/8/8/8/8/8 w - - 0 1',v.flip,null,null,{click:true,nocoords:true,marks:v.marks||[]})}</div>`;
+  else h+=`<div class="pz-actions"><button class="primary" style="font-size:20px;padding:16px" data-a="viscolor" data-c="light">⬜ Light</button><button style="font-size:20px;padding:16px" data-a="viscolor" data-c="dark">⬛ Dark</button></div>`;
+  return h+`<div style="margin-top:10px"><a href="#" data-a="visquit" class="mute hint">Stop</a></div>`;
+}
+Object.assign(actions,{
+  visstart:d=>visStart(d.m),
+  visquit:()=>{clearInterval(S.visT);S.vis=null;render()},
+  viscolor:d=>{const v=S.vis;if(!v||v.state!=='run')return;visAnswer((d.c==='light')===isLightSq(v.target),null)},
+});
+
+/* ======================================================================
+   Scout an opponent: what do they play, and how well does it work for them?
+   Reads their public chess.com games straight from chess.com (nothing is stored).
+   ====================================================================== */
+S.scout=null;
+const scoutKind=r=>r==='win'?'w':['agreed','repetition','stalemate','insufficient','50move','timevsinsufficient'].includes(r)?'d':'l';
+async function scoutRun(name){
+  name=String(name||'').trim().toLowerCase();
+  if(!/^[a-z0-9_-]{2,40}$/.test(name)){S.scout={err:'Enter a chess.com username.'};render();return}
+  S.scout={name,busy:true};render();
+  try{
+    let arch;try{arch=(await getJson(`https://api.chess.com/pub/player/${encodeURIComponent(name)}/games/archives`)).archives}
+    catch(e){throw new Error(e.message==='not found'?`chess.com user "${name}" not found`:e.message)}
+    const games=[];
+    for(const url of arch.slice(-2).reverse()){try{games.push(...(await getJson(url)).games)}catch(e){/* month unavailable: use the rest */}}
+    const sides={white:{},black:{}},tot={white:[0,0,0],black:[0,0,0]};let rating=null,n=0;
+    for(const g of games){
+      if(!g.pgn||g.rules!=='chess')continue;
+      const side=(g.white.username||'').toLowerCase()===name?'white':(g.black.username||'').toLowerCase()===name?'black':null;
+      if(!side)continue;
+      n++;if(rating==null)rating=g[side].rating;
+      const k=scoutKind(g[side].result),o=family(niceName(openingName(headersOf(g.pgn))));
+      const rec=sides[side][o]||(sides[side][o]=[0,0,0]);
+      const i=k==='w'?0:k==='d'?1:2;rec[i]++;tot[side][i]++;
+    }
+    const rows=side=>Object.entries(sides[side]).map(([o,r])=>({o,n:r[0]+r[1]+r[2],w:r[0],d:r[1],l:r[2]})).sort((a,b)=>b.n-a.n).slice(0,6);
+    S.scout={name,n,rating,white:rows('white'),black:rows('black'),tot};
+  }catch(e){S.scout={name,err:e.message}}
+  render();
+}
+function scoutView(){
+  const sc=S.scout||{};
+  let h=`<div class="card"><h3>🕵 Scout an opponent</h3><p class="mute" style="margin-top:0">Playing someone tomorrow? See which openings they favour with each colour and how well those work for them, from their last two months of chess.com games. Prepare for the lines they play most.</p>
+    <div class="ctl"><input id="scoutName" placeholder="chess.com username" value="${esc(sc.name||'')}" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1"><button class="primary" data-a="scout" ${sc.busy?'disabled':''}>${sc.busy?'Looking…':'Scout'}</button></div></div>`;
+  if(sc.err)return h+`<div class="card"><div class="coach bad">${esc(sc.err)}</div></div>`;
+  if(sc.busy||!sc.white)return h;
+  if(!sc.n)return h+`<div class="card"><div class="mute">No recent standard games found for ${esc(sc.name)}.</div></div>`;
+  const block=(side,label)=>{
+    const t=sc.tot[side],tn=t[0]+t[1]+t[2];
+    if(!tn)return `<div class="card"><h3>${label}</h3><div class="mute">No games with this colour.</div></div>`;
+    const rows=sc[side].map(r=>`<div class="exline" style="cursor:default"><div style="display:flex;justify-content:space-between;gap:8px"><b style="font-size:15px">${esc(r.o)}</b><span class="mute">${r.n} game${r.n===1?'':'s'} · ${pct(tn?r.n:0,tn)}%</span></div>
+      <div class="mute hint">scores ${pct(r.w+r.d/2,r.n)}% · ${r.w}W ${r.d}D ${r.l}L</div></div>`).join('');
+    return `<div class="card"><h3>${label}</h3><div class="mute hint" style="margin-bottom:6px">${tn} games · scores ${pct(t[0]+t[1]/2,tn)}% (${t[0]}W ${t[1]}D ${t[2]}L)</div>${rows}</div>`;
+  };
+  return h+`<div class="card"><div class="mute">${esc(sc.name)} · rating ${sc.rating||'?'} · ${sc.n} recent games</div></div>`+block('white','With White')+block('black','With Black');
+}
+Object.assign(actions,{scout:()=>{const el=$('#scoutName');scoutRun(el?el.value:'')}});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='scoutName'){e.preventDefault();scoutRun(e.target.value)}});
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
