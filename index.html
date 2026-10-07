@@ -109,6 +109,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
   header h1{width:100%;margin:0}
   header input{flex:1 1 100%;min-width:0}
   header select{flex:1}
+  header #source{flex:1 1 100%}
   #status{width:100%}
   .hm{display:none}
   .stat{min-width:calc(50% - 10px)}
@@ -127,6 +128,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 <body>
 <header>
   <h1>♞ ChessCoach</h1>
+  <select id="source" aria-label="Where do you play?"><option value="chesscom">chess.com</option><option value="lichess">lichess</option></select>
   <input id="user" placeholder="chess.com username" autocomplete="off" autocapitalize="off" spellcheck="false">
   <select id="months"><option value="1">Last month</option><option value="2" selected>Last 2 months</option><option value="3">Last 3 months</option><option value="6">Last 6 months</option><option value="12">Last 12 months</option></select>
   <button id="load" class="primary">Load games</button>
@@ -174,6 +176,12 @@ const DB={
   async wipe(prefix){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction('kv','readwrite');t.objectStore('kv').delete(IDBKeyRange.bound(prefix,prefix+'￿'));t.oncomplete=res;t.onerror=()=>rej(t.error)})}
 };
 const K=(...a)=>[S.user.toLowerCase(),...a].join('|');
+// S.user is the profile key: a plain name for chess.com, "li.name" for lichess (a dot cannot occur in a chess.com name).
+const isLi=k=>/^li\./i.test(k||'');
+const plainName=k=>String(k||'').replace(/^li\./i,'');
+const srcLabel=k=>isLi(k===undefined?S.user:k)?'lichess':'chess.com';
+const keyFromInputs=()=>{const n=$('#user').value.trim();return !n?'':$('#source').value==='lichess'?'li.'+n.toLowerCase():n};
+const syncPlaceholder=()=>{$('#user').placeholder=($('#source').value==='lichess'?'lichess':'chess.com')+' username'};
 const save=(k,v)=>DB.set(k,v).catch(()=>{}); // saving is best effort: the app still works without storage
 
 /* ---------- helpers ---------- */
@@ -250,7 +258,7 @@ const slim=r=>({url:r.url,pgn:r.pgn,time_class:r.time_class,end_time:r.end_time,
   white:{username:r.white.username,rating:r.white.rating,result:r.white.result},black:{username:r.black.username,rating:r.black.rating,result:r.black.result}});
 function ingest(raw,persist){
   if(S.byUrl.has(raw.url))return false;
-  const g=parseRaw(raw,S.user);if(!g)return false;
+  const g=parseRaw(raw,plainName(S.user));if(!g)return false;
   if(persist)S.stored.push(raw.imported?raw:slim(raw));
   S.games.push(g);S.byUrl.set(raw.url,g);return true;
 }
@@ -266,7 +274,7 @@ async function loadUser(name,sync,manual){
   S.stats=null;S.ot=null;S.trainMode='mistakes';S.goalTc=null;S.log=[];S.weekOff=0;
   try{S.goal=JSON.parse(ls.get('cc:goal:'+name.toLowerCase())||'null')}catch(e){S.goal=null}
   const pending=[];
-  ls.set('cc:user',name);ls.set('cc:months',$('#months').value);$('#user').value=name;
+  ls.set('cc:user',name);ls.set('cc:months',$('#months').value);$('#source').value=isLi(name)?'lichess':'chesscom';$('#user').value=plainName(name);syncPlaceholder();
   try{
     const [games,meta,pm,tm]=await Promise.all([DB.get(K('games')),DB.get(K('meta')),DB.all(K('p')+'|'),DB.all(K('t')+'|')]);
     if(meta){S.meta=meta;S.stats=meta.stats||null}
@@ -280,7 +288,7 @@ async function loadUser(name,sync,manual){
   setStatus(S.games.length?`${S.games.length} saved games`:'');
   render();
   if(pending.length){await prepareAll(pending);setStatus(`${S.games.length} saved games`);render()}
-  if(sync&&!(await syncFromServer(false,manual)))await syncGames(); // our server first; chess.com directly if it is unreachable
+  if(sync&&!(await syncFromServer(false,manual)))await(isLi(S.user)?syncLichessDirect():syncGames()); // our server first; the site itself if the server is unreachable
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
 const REV_V=6;
@@ -311,7 +319,7 @@ const apiUrl=(what,name)=>`api/${what}/${encodeURIComponent(name.toLowerCase())}
 // the progress and picks up finished reviews automatically (see pollServer).
 async function syncFromServer(poll,manual){
   const user=S.user;
-  if(!poll)setStatus(manual?'Checking chess.com for new games…':'Loading games…');
+  if(!poll)setStatus(manual?`Checking ${srcLabel()} for new games…`:'Loading games…');
   let r,j;
   try{
     r=await fetch(`${apiUrl('profile',user)}?months=${$('#months').value}&since=${S.meta.since||0}${manual?'&refresh=1':''}`,{cache:'no-store'});
@@ -320,7 +328,7 @@ async function syncFromServer(poll,manual){
   }catch(e){S.serverWhy=e.message||'no connection';return false}
   if(S.user!==user)return true;
   if(!r.ok){
-    if(r.status===404&&j.error&&/not found/.test(j.error)){setStatus(`⚠ chess.com user "${user}" not found`);return true}
+    if(r.status===404&&j.error&&/not found/.test(j.error)){setStatus(`⚠ ${srcLabel(user)} user "${plainName(user)}" not found`);return true}
     S.serverWhy=`HTTP ${r.status} ${j.error||''}`;
     return false; // server trouble or rate limit: ask chess.com directly instead
   }
@@ -369,6 +377,35 @@ function showErr(where,e){
   const msg=(e&&e.name&&e.name!=='Error'?e.name+': ':'')+((e&&e.message)||e);
   setStatus(`⚠ ${where}: ${msg}`);console.error(where,e);
 }
+// lichess games, asked for straight from lichess (used when the ChessCoach server cannot be reached).
+const LI_CLASS={ultraBullet:'bullet',bullet:'bullet',blitz:'blitz',rapid:'rapid',classical:'rapid',correspondence:'daily'};
+function liRaw(g){ // one line of lichess' game export -> the stored game shape (same as the server's)
+  if(g.variant!=='standard'||!g.pgn||!['mate','resign','stalemate','timeout','draw','outoftime','variantEnd'].includes(g.status)||!g.players)return null;
+  const nm=p=>p.user?p.user.name:p.aiLevel?'Stockfish level '+p.aiLevel:'Anonymous';
+  const result=col=>g.winner===col?'win':g.winner?(g.status==='mate'?'checkmated':g.status==='resign'?'resigned':g.status==='outoftime'?'timeout':g.status==='timeout'?'abandoned':'lose'):(g.status==='stalemate'?'stalemate':'agreed');
+  const side=(col,p)=>({username:nm(p),rating:(p.rating||0)+(p.ratingDiff||0),result:result(col)});
+  return {url:'https://lichess.org/'+g.id,pgn:g.pgn,time_class:LI_CLASS[g.speed]||'rapid',end_time:Math.floor((g.lastMoveAt||g.createdAt)/1000),rules:'chess',src:'lichess',
+    white:side('white',g.players.white),black:side('black',g.players.black)};
+}
+async function syncLichessDirect(){
+  const user=S.user,name=plainName(user);let stage='asking lichess';
+  setStatus('Checking lichess for new games…');
+  try{
+    const last=S.games.length?Math.max(...S.games.map(g=>g.time)):0;
+    const since=Math.max(Date.now()-(+$('#months').value)*30*864e5,last*1000+1);
+    const q=new URLSearchParams({pgnInJson:'true',clocks:'true',opening:'true',max:'500',since:String(since)});
+    const r=await fetch(`https://lichess.org/api/games/user/${encodeURIComponent(name)}?${q}`,{headers:{Accept:'application/x-ndjson'}});
+    if(r.status===404)throw new Error(`lichess user "${name}" not found`);
+    if(r.status===429)throw new Error('lichess is rate-limiting requests, try again in a minute');
+    if(!r.ok)throw new Error('lichess answered HTTP '+r.status);
+    stage='reading the games';let added=0;
+    for(const line of (await r.text()).split('\n')){if(!line.trim())continue;try{const raw=liRaw(JSON.parse(line));if(raw&&ingest(raw,true))added++}catch(e){}}
+    if(S.user!==user)return;
+    sortGames();save(K('games'),S.stored);
+    setStatus(`${S.games.length} games${added?` (${added} new)`:''}`);
+  }catch(e){showErr(stage,e)}
+  try{render()}catch(e){showErr('showing the page',e)}
+}
 async function syncGames(){
   const user=S.user;let stage='checking chess.com';
   setStatus('Checking chess.com for new games…');
@@ -409,7 +446,7 @@ function importPgn(text,sideSel){
     const h=c.header(),u=user.toLowerCase();
     const side=sideSel!=='auto'?sideSel:(h.White||'').toLowerCase()===u?'white':(h.Black||'').toLowerCase()===u?'black':null;
     if(!side){unknown++;continue}
-    const link=[h.Link,h.Site].find(x=>x&&/^https?:\/\/\S*chess\.com\/\S*game/.test(x));
+    const link=[h.Link,h.Site].find(x=>x&&/^https?:\/\/(\S*chess\.com\/\S*game|lichess\.org\/\w{8})/.test(x));
     const url=link||'pgn:'+hash(chunk.replace(/\s+/g,' '));
     if(S.byUrl.has(url)){dup++;continue}
     if(ingest({imported:true,url,pgn:chunk,side,added:Math.floor(Date.now()/1000)},true))added++;else bad++;
@@ -737,9 +774,9 @@ const dateStr=t=>t?new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',
 
 function welcomeView(){
   return `<div class="card"><h3>Welcome to ChessCoach</h3>
-    <p>Type your chess.com username above and press <b>Load games</b>. That’s all: from then on ChessCoach</p>
-    <ol><li>checks chess.com for your new games every minute,</li><li>analyses every game with Stockfish on the server, with chess.com-style labels (theory, great, blunder…),</li><li>shows what went wrong and which openings cost you points,</li><li>turns your mistakes into <b>training puzzles</b>.</ol>
-    <p class="mute hint">No password needed. Type any chess.com username (yours, a friend’s…) and ChessCoach’s server keeps that player’s <b>public</b> games and the engine analysis, so the page loads fast for everyone who looks the name up. Your own PGN imports and your training progress never leave your device.</p></div>`;
+    <p>Choose <b>chess.com</b> or <b>lichess</b>, type your username above and press <b>Load games</b>. That’s all: from then on ChessCoach</p>
+    <ol><li>checks for your new games every minute,</li><li>analyses every game with Stockfish on the server, with chess.com-style labels (theory, great, blunder…),</li><li>shows what went wrong and which openings cost you points,</li><li>turns your mistakes into <b>training puzzles</b>.</ol>
+    <p class="mute hint">No password needed. Type any chess.com or lichess username (yours, a friend’s…) and ChessCoach’s server keeps that player’s <b>public</b> games and the engine analysis, so the page loads fast for everyone who looks the name up. Your own PGN imports and your training progress never leave your device.</p></div>`;
 }
 
 function gamesView(){
@@ -748,10 +785,10 @@ function gamesView(){
   if(S.server&&!S.showLocal){
     const p=S.srv||{pending:0,done:0,target:0},t=S.checked?new Date(S.checked).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'–';
     h+=`<div class="card"><b>☁ Automatic analysis</b>
-      <p style="margin:6px 0">Stockfish on the server analyses your newest ${MAX_ANALYSE} games on its own, and checks chess.com for new games <b>every minute</b>. Nothing to press: new reviews appear here by themselves.</p>
+      <p style="margin:6px 0">Stockfish on the server analyses your newest ${MAX_ANALYSE} games on its own, and checks ${srcLabel()} for new games <b>every minute</b>. Nothing to press: new reviews appear here by themselves.</p>
       <div class="progress"><i style="width:${p.target?p.done/p.target*100:0}%"></i></div>
       <div class="mute hint" style="margin-top:6px">${p.pending?`Working through your games: <b>${p.done} of ${p.target}</b> done.`:`All ${p.target} games analysed.`} Last checked at ${t}.</div>
-      <div class="ctl"><button data-a="refresh">↻ Check chess.com now</button><button data-a="showLocal">Analyse on this device instead</button></div></div>`;
+      <div class="ctl"><button data-a="refresh">↻ Check ${srcLabel()} now</button><button data-a="showLocal">Analyse on this device instead</button></div></div>`;
   }else{
     if(S.server)h+=`<p class="hint"><a href="#" data-a="showServer" style="color:var(--accent)">‹ Back to automatic server analysis</a></p>`;
     h+=`<div class="card"><div class="ctl">
@@ -779,14 +816,14 @@ function gamesView(){
       <td class="mute hm">${g.rev?'Review ›':'Analyse ›'}</td></tr>`;
   });
   if(!S.games.length)h+='<tr><td colspan="7" class="mute">No games yet. Press <b>Load games</b>, or add a PGN above.</td></tr>';
-  h+=`</table></div><p class="mute hint">Public profile “${esc(S.user)}”: public chess.com games and their analysis are cached on the ChessCoach server${S.server?'':' (server not reachable right now: using this device only)'}. Imported PGNs and training progress stay on this device. <a href="#" data-a="wipe" style="color:var(--mute)">Delete my data</a></p>`;
+  h+=`</table></div><p class="mute hint">Public profile “${esc(plainName(S.user))}” (${srcLabel()}): public games and their analysis are cached on the ChessCoach server${S.server?'':' (server not reachable right now: using this device only)'}. Imported PGNs and training progress stay on this device. <a href="#" data-a="wipe" style="color:var(--mute)">Delete my data</a></p>`;
   return h;
 }
 
 function reviewView(){
   const g=S.games[S.sel];
   let h=`<div class="ctl"><button data-a="back">‹ All games</button><button data-a="flip">⇅ Flip</button>
-    ${/^https?:/.test(g.url)?`<a class="mute" href="${esc(g.url)}" target="_blank" rel="noopener">view on chess.com ↗</a>`:''}</div>`;
+    ${/^https?:/.test(g.url)?`<a class="mute" href="${esc(g.url)}" target="_blank" rel="noopener">view on ${/lichess\.org/.test(g.url)?'lichess':'chess.com'} ↗</a>`:''}</div>`;
   if(!g.rev){
     return h+`<div class="card"><h3>${esc(g.white.username)} vs ${esc(g.black.username)}</h3>
       <p>This game has not been analysed yet.${S.server&&S.srv&&S.srv.pending?' The server is working through your newest games and will get to it, or you can analyse it here right now.':''}</p>
@@ -1139,9 +1176,10 @@ document.addEventListener('keydown',e=>{
     if(e.key==='ArrowLeft')actions.nav({k:S.cur-1});
     if(e.key==='ArrowRight')actions.nav({k:S.cur+1});
   }
-  if(e.key==='Enter'&&e.target.id==='user')loadUser($('#user').value,true,true).catch(er=>showErr('loading',er));
+  if(e.key==='Enter'&&e.target.id==='user')loadUser(keyFromInputs(),true,true).catch(er=>showErr('loading',er));
 });
-$('#load').onclick=()=>loadUser($('#user').value,true,true).catch(e=>showErr('loading',e));
+$('#load').onclick=()=>loadUser(keyFromInputs(),true,true).catch(e=>showErr('loading',e));
+$('#source').addEventListener('change',syncPlaceholder);
 // Anything unexpected is shown on screen (and in the console) instead of failing silently.
 addEventListener('error',ev=>showErr('unexpected error',ev.error||ev.message));
 addEventListener('unhandledrejection',ev=>showErr('unexpected error',ev.reason));
@@ -1342,7 +1380,7 @@ function planItems(A){
 function goalView(){
   const A=analytics();
   const tcs=Object.entries(A.tc).filter(([k,v])=>k!=='import'&&v.pts.length).sort((a,b)=>b[1].pts.length-a[1].pts.length).map(x=>x[0]);
-  if(!tcs.length)return '<div class="card"><h3>Rating goal</h3><p class="mute" style="margin:0">Load some chess.com games first: this tab follows your rating and your target.</p></div>';
+  if(!tcs.length)return '<div class="card"><h3>Rating goal</h3><p class="mute" style="margin:0">Load some games first: this tab follows your rating and your target.</p></div>';
   const tc=tcs.includes(S.goalTc)?S.goalTc:(S.goal&&tcs.includes(S.goal.tc)?S.goal.tc:tcs[0]);
   const pts=A.tc[tc].pts,st=S.stats&&S.stats[tc],cur=st&&st.rating?st.rating:pts[pts.length-1].r;
   const goal=S.goal&&S.goal.tc===tc?S.goal:null;
@@ -2071,7 +2109,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)pushSync()
   pushInit().then(()=>{if(S.user&&(S.tab==='progress'||S.tab==='train'))render()}).catch(()=>{});
   const m=ls.get('cc:months');if(m)$('#months').value=m;
   const u=ls.get('cc:user');
-  if(u){$('#user').value=u;loadUser(u,true).catch(e=>showErr('loading',e))}else render();
+  if(u){$('#source').value=isLi(u)?'lichess':'chesscom';$('#user').value=plainName(u);syncPlaceholder();loadUser(u,true).catch(e=>showErr('loading',e))}else render();
 })();
 </script>
 </body>

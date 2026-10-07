@@ -22,7 +22,7 @@ const ANALYSE_LATEST = +process.env.ANALYSE_LATEST || 100; // newest games per u
 const QUEUE_MAX = 1500;                                     // total waiting jobs across all users
 const UA = 'ChessCoach/1.0 (+https://chess.vrhconsultancy.nl)';
 const MAX_GAMES = 1500, MAX_USERS = 2000, SYNC_EVERY = 2 * 60e3, MAX_MONTHS = 12;
-const NAME_RE = /^[a-z0-9_-]{2,40}$/;
+const NAME_RE = /^(li\.)?[a-z0-9_-]{2,40}$/; // "li." marks a lichess profile (a dot never occurs in chess.com names, so the two cannot collide)
 
 fs.mkdirSync(path.join(DATA, 'users'), { recursive: true });
 const userFile = n => path.join(DATA, 'users', n + '.json');
@@ -65,7 +65,68 @@ function sync(name, months, force) {
   if (!syncing.has(name)) syncing.set(name, doSync(name, months, force).finally(() => syncing.delete(name)));
   return syncing.get(name);
 }
+/* ---------- lichess ---------- */
+// Games come as newline-delimited JSON with the full PGN (clock times included). They are stored in the same
+// shape as chess.com games, with chess.com-style result words, so everything downstream works unchanged.
+const LI_DONE = new Set(['mate', 'resign', 'stalemate', 'timeout', 'draw', 'outoftime', 'variantEnd']);
+const LI_CLASS = { ultraBullet: 'bullet', bullet: 'bullet', blitz: 'blitz', rapid: 'rapid', classical: 'rapid', correspondence: 'daily' };
+function liSlim(g) {
+  if (g.variant !== 'standard' || !g.pgn || !LI_DONE.has(g.status) || !g.players || !g.players.white || !g.players.black) return null;
+  const nm = p => p.user ? p.user.name : p.aiLevel ? 'Stockfish level ' + p.aiLevel : 'Anonymous';
+  const result = col => {
+    if (g.winner === col) return 'win';
+    if (g.winner) return g.status === 'mate' ? 'checkmated' : g.status === 'resign' ? 'resigned' : g.status === 'outoftime' ? 'timeout' : g.status === 'timeout' ? 'abandoned' : 'lose';
+    return g.status === 'stalemate' ? 'stalemate' : 'agreed';
+  };
+  const side = (col, p) => ({ username: nm(p), rating: (p.rating || 0) + (p.ratingDiff || 0), result: result(col) }); // rating after the game, like chess.com
+  return { url: 'https://lichess.org/' + g.id, pgn: g.pgn, time_class: LI_CLASS[g.speed] || 'rapid', end_time: Math.floor((g.lastMoveAt || g.createdAt) / 1000), rules: 'chess', src: 'lichess',
+    white: side('white', g.players.white), black: side('black', g.players.black) };
+}
+async function lichessGames(user, params) {
+  const q = new URLSearchParams({ pgnInJson: 'true', clocks: 'true', opening: 'true', ...params });
+  const r = await fetch(`https://lichess.org/api/games/user/${encodeURIComponent(user)}?${q}`, { headers: { 'User-Agent': UA, Accept: 'application/x-ndjson' }, signal: AbortSignal.timeout(90000) });
+  if (r.status === 404) { const e = new Error('lichess user not found'); e.code = 404; throw e; }
+  if (r.status === 429) throw new Error('lichess is rate-limiting requests, try again in a minute');
+  if (!r.ok) throw new Error('lichess answered HTTP ' + r.status);
+  const out = [];
+  for (const line of (await r.text()).split('\n')) { if (!line.trim()) continue; try { const s = liSlim(JSON.parse(line)); if (s) out.push(s); } catch (e) { /* skip a broken line */ } }
+  return out;
+}
+async function doSyncLichess(name, months, force) {
+  const d = load(name), user = name.slice(3);
+  if (!force && Date.now() - d.lastSync < SYNC_EVERY && d.months >= months) return;
+  const now = Date.now(), from = now - months * 30 * 864e5;
+  const add = list => { for (const g of list) if (!d.games[g.url]) d.games[g.url] = { ...g, seq: ++d.seq }; };
+  const since = d.liTo || from;
+  add(await lichessGames(user, { since: String(since), max: '800' }));           // everything new since the last check (newest first)
+  d.liTo = now;
+  if (!d.liFrom || from < d.liFrom) {                                              // a longer history was asked for than we hold
+    const until = d.liFrom || since;
+    if (from < until) add(await lichessGames(user, { since: String(from), until: String(until), max: '800' }));
+    d.liFrom = from;
+  }
+  const urls = Object.keys(d.games);
+  if (urls.length > MAX_GAMES) {
+    urls.sort((a, b) => d.games[b].end_time - d.games[a].end_time);
+    for (const u of urls.slice(MAX_GAMES)) { delete d.games[u]; delete d.an[u]; }
+  }
+  if (Date.now() - (d.statsAt || 0) > 600e3) {                                     // current ratings, at most every 10 minutes
+    try {
+      const r = await fetch('https://lichess.org/api/user/' + encodeURIComponent(user), { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(20000) });
+      if (r.ok) {
+        const j = await r.json(), p = j.perfs || {}, out = {};
+        for (const [k, t] of [['rapid', 'rapid'], ['blitz', 'blitz'], ['bullet', 'bullet'], ['correspondence', 'daily']]) if (p[k] && p[k].games) out[t] = { rating: p[k].rating, w: null, l: null, d: null };
+        if (!out.rapid && p.classical && p.classical.games) out.rapid = { rating: p.classical.rating };
+        d.stats = out; d.statsAt = Date.now();
+      }
+    } catch (e) { /* keep the previous stats */ }
+  }
+  d.lastSync = Date.now(); d.months = months;
+  if (Object.keys(d.games).length) persist(d);
+}
+
 async function doSync(name, months, force) {
+  if (name.startsWith('li.')) return doSyncLichess(name, months, force);
   const d = load(name);
   if (!force && Date.now() - d.lastSync < SYNC_EVERY && d.months >= months) return;
   const all = (await cj(`https://api.chess.com/pub/player/${encodeURIComponent(name)}/games/archives`)).archives || [];
@@ -86,7 +147,8 @@ async function doSync(name, months, force) {
     for (const u of urls.slice(MAX_GAMES)) { delete d.games[u]; delete d.an[u]; }
   }
   // current ratings per time control (for the rating goal): best effort, never blocks the game sync
-  try {
+  if (Date.now() - (d.statsAt || 0) > 600e3) try {
+    d.statsAt = Date.now();
     const st = await cj(`https://api.chess.com/pub/player/${encodeURIComponent(name)}/stats`), out = {};
     for (const k of ['chess_rapid', 'chess_blitz', 'chess_bullet', 'chess_daily']) {
       const s = st[k]; if (!s || !s.last) continue;
@@ -382,7 +444,7 @@ async function handle(req, res) {
     return send(res, 404, { error: 'not found' });
   }
   let name; try { name = decodeURIComponent(m[1]).trim().toLowerCase(); } catch (e) { return send(res, 400, { error: 'bad name' }); }
-  if (!NAME_RE.test(name)) return send(res, 400, { error: 'invalid chess.com username' });
+  if (!NAME_RE.test(name)) return send(res, 400, { error: 'invalid username' });
 
   if (req.method === 'GET') {
     if (limited(ip, 'profile', 60, 60e3)) return send(res, 429, { error: 'too many requests, try again in a minute' });

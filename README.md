@@ -1,10 +1,11 @@
 # ChessCoach
 
-A free, browser-only chess game reviewer for your [chess.com](https://www.chess.com) games.
-Enter your username, load your games, and let Stockfish show you what went wrong.
+A free chess game reviewer for your [chess.com](https://www.chess.com) **and [lichess](https://lichess.org)** games.
+Pick the site, enter your username, load your games, and let Stockfish show you what went wrong.
 
 - **Game review (Stockfish 18)**: every move labelled like chess.com's Game Review: Brilliant, Great, Best, Excellent, Good, Theory (opening book), Inaccuracy, Miss, Mistake, Blunder. Accuracy %, eval graph, a summary table per player, the engine's best line, hung pieces / missed captures / missed mates, and where you left opening theory (with the theory moves).
 - **"Why was this bad?"**: for every inaccuracy, miss, mistake and blunder (yours and your opponent's) the review names the reasons in plain words: piece left hanging, threat ignored, fork, bad trade, missed capture or mate, early queen, weakened king, a less active piece, a winning advantage thrown away.
+- **lichess support**: choose lichess next to the username; the server fetches your standard-variant games (with clock times) from lichess' public API and everything else works the same, including the rating goal, analytics, training and reminders. If the ChessCoach server cannot be reached the page fetches the games from lichess itself.
 - **Weekly progress**: this week against the same days last week (games, win rate, rating change, accuracy, serious mistakes per 100 moves), highlights, your top mistake types with a tip, training activity and streak, a focus list, an 8-week trend, and a copyable summary.
 - **Rating goal**: pick a time control and a target rating; progress bar, rating history with the target line, pace and ETA, and a personal plan of what to work on.
 - **Tactics by theme**: the tactics you missed in your own games, recognised (checkmate, forks, pins and skewers, discovered attacks, free material, defence, promotion, safety) and grouped, so you can train one pattern at a time; each solved puzzle explains why the move works.
@@ -18,7 +19,7 @@ Enter your username, load your games, and let Stockfish show you what went wrong
 - **Saved in your browser**: enter your username once; games, analysis and training progress are kept locally (IndexedDB), and only new games are fetched next time.
 - **Add your own games**: paste or upload any PGN (chess.com, lichess, over the board).
 - **Mobile friendly**: tap-to-move puzzles and a layout that fits phones.
-- Games come from the public chess.com API (no login or key needed).
+- Games come from the public chess.com and lichess APIs (no login or key needed). A lichess profile is stored as `li.<name>` on the server.
 
 Everything runs in the browser: Stockfish 18 (WebAssembly) analyses locally, and results are cached in your browser. Nothing is sent anywhere except the public chess.com API requests.
 
