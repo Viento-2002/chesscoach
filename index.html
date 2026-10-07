@@ -290,6 +290,7 @@ async function loadUser(name,sync,manual){
   setStatus(S.games.length?`${S.games.length} saved games`:'');
   render();
   if(pending.length){await prepareAll(pending);setStatus(`${S.games.length} saved games`);render()}
+  tryOpenPending(); // opened from a notification: show that game as soon as it is among the saved ones
   if(sync&&!(await syncFromServer(false,manual)))await(isLi(S.user)?syncLichessDirect():syncGames()); // our server first; the site itself if the server is unreachable
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
@@ -349,6 +350,7 @@ async function syncFromServer(poll,manual){
   setStatus(`${S.games.length} games · ${n} analysed${p.pending?` · server analysing… ${p.done} of ${p.target}`:''}${j.warn?' · '+j.warn:''}`);
   // don't rebuild the page under someone who is reviewing a game or solving a puzzle
   if(!poll||(S.sel==null&&!S.tr&&(fresh.length||added))){try{render()}catch(e){showErr('showing the page',e)}}
+  if(S.pendingOpen&&!tryOpenPending()){toast('That game is not among your loaded games.');S.pendingOpen=null;try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}
   pollSoon(p.pending?15000:60000); // faster while the server is busy analysing, otherwise once a minute
   setTimeout(warmThemes,2500);     // recognise the themes of your puzzles quietly in the background
   setTimeout(pushSync,3000);       // keep the reminder server up to date with your training
@@ -2029,7 +2031,7 @@ const localISO=ms=>{const d=new Date(ms);return `${d.getFullYear()}-${pad2(d.get
 const isStandalone=()=>(window.matchMedia&&matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true;
 const isIOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const b64key=s=>{const raw=atob((s+'='.repeat((4-s.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(raw,c=>c.charCodeAt(0))};
-S.push={ready:false,supported:false,needInstall:false,perm:'default',sub:null,hour:19,min:0,busy:false,msg:'',ok:true};
+S.push={ready:false,supported:false,needInstall:false,perm:'default',sub:null,hour:19,min:0,notify:'batch',busy:false,msg:'',ok:true};
 const pushState=()=>({lastTrain:S.log.length?localISO(S.log[S.log.length-1].t):null,streak:trainStreak(),due:S.user?buildPuzzles().filter(isDue).length:0});
 async function pushPost(what,body){
   const r=await fetch('api/push/'+what,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -2044,6 +2046,10 @@ async function pushInit(){
   P.supported=true;P.perm=Notification.permission;
   try{const reg=await navigator.serviceWorker.ready;P.sub=await reg.pushManager.getSubscription()}catch(e){}
   try{const s=JSON.parse(ls.get('cc:remind')||'null');if(s){P.hour=s.hour;P.min=s.min}}catch(e){}
+  if(['off','batch','each'].includes(ls.get('cc:notify')))P.notify=ls.get('cc:notify');
+  navigator.serviceWorker.addEventListener('message',e=>{ // a tapped notification asks the open app to show a game
+    if(e.data&&e.data.type==='open'){try{const h=new URL(e.data.url,location.href).hash;if(h&&h!==location.hash)location.hash=h}catch(err){}}
+  });
   P.ready=true;
   if(P.sub)pushSync();
 }
@@ -2060,7 +2066,7 @@ async function pushEnable(){
     if(perm!=='granted')throw new Error('Notifications are blocked. Allow them for ChessCoach in your phone or browser settings, then try again.');
     const reg=await navigator.serviceWorker.ready,{key}=await (await fetch('api/push/key')).json();
     const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64key(key)});
-    await pushPost('subscribe',{subscription:sub.toJSON(),user:S.user,hour:P.hour,min:P.min,tz:-new Date().getTimezoneOffset(),state:pushState()});
+    await pushPost('subscribe',{subscription:sub.toJSON(),user:S.user,hour:P.hour,min:P.min,tz:-new Date().getTimezoneOffset(),notify:P.notify,state:pushState()});
     P.sub=sub;P.msg='Reminders are on. Use "Send a test" to see how one looks.';P.ok=true;
   }catch(e){P.msg=e.message||String(e);P.ok=false}
   P.busy=false;render();
@@ -2082,6 +2088,8 @@ function reminderCard(){
   else if(!P.sub)h+=`<p class="mute" style="margin-top:0">One gentle reminder a day, only if you have not trained yet: it mentions your streak and the puzzles waiting. You can turn it off at any time.</p>
     <div class="ctl"><label class="mute">Remind me at ${time}</label><button class="primary" data-a="pushon" ${P.busy?'disabled':''}>Turn on reminders</button></div>`;
   else h+=`<p style="margin-top:0">Reminders are <b style="color:var(--accent)">on</b>: one a day at ${time}, if you have not trained yet.</p>
+    <div class="ctl"><label class="mute" style="flex:1 1 100%">Tell me when my analysis is finished:
+      <select id="notifyMode" style="margin-top:6px;width:100%"><option value="batch" ${P.notify==='batch'?'selected':''}>After a batch of games (3 or more)</option><option value="each" ${P.notify==='each'?'selected':''}>After every new game</option><option value="off" ${P.notify==='off'?'selected':''}>Never</option></select></label></div>
     <div class="ctl"><button data-a="pushtest" ${P.busy?'disabled':''}>Send a test</button><button data-a="pushoff" ${P.busy?'disabled':''}>Turn off</button></div>`;
   if(P.msg)h+=`<div class="coach ${P.ok?'ok':'bad'}" style="margin:10px 0 0">${esc(P.msg)}</div>`;
   return h+'</div>';
@@ -2102,6 +2110,11 @@ Object.assign(actions,{
   gotoreminder:()=>{S.tab='progress';render();const c=$('#reminderCard');if(c)c.scrollIntoView({block:'center'})},
 });
 document.addEventListener('change',e=>{
+  if(e.target.id==='notifyMode'){
+    const P=S.push;P.notify=e.target.value;ls.set('cc:notify',P.notify);
+    if(P.sub)pushPost('prefs',{endpoint:P.sub.endpoint,notify:P.notify}).then(()=>{P.msg=P.notify==='off'?'You will not be notified when analysis finishes.':P.notify==='each'?'You will be notified after every newly analysed game.':'You will be notified when a batch of 3 or more games is analysed.';P.ok=true;render()}).catch(er=>{P.msg=er.message;P.ok=false;render()});
+    return;
+  }
   if(e.target.id!=='remindTime')return;
   const m=String(e.target.value).match(/^(\d{1,2}):(\d{2})$/);if(!m)return;
   const P=S.push;P.hour=+m[1];P.min=+m[2];ls.set('cc:remind',JSON.stringify({hour:P.hour,min:P.min}));
@@ -2235,19 +2248,35 @@ async function openShared(key,gid,ply){
   render();
 }
 const hashRoute=()=>{const m=location.hash.match(/^#r\/([^/]+)\/([\w.-]+)(?:\/(\d+))?$/);return m?{key:decodeURIComponent(m[1]),gid:m[2],ply:m[3]}:null};
+// #g/<game id>[/<move>] opens one of YOUR games in the app: this is where a tapped "analysis finished" notification lands.
+const hashOpen=()=>{const m=location.hash.match(/^#g\/([\w.-]+)(?:\/(\d+))?$/);return m?{gid:m[1],ply:m[2]?+m[2]:0}:null};
+function tryOpenPending(){
+  const p=S.pendingOpen;if(!p)return false;
+  const i=S.games.findIndex(g=>gidOf(g.url)===p.gid);
+  if(i<0)return false;
+  S.pendingOpen=null;try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}
+  S.shared=null;actions.open({i,k:p.ply});
+  return true;
+}
 function leaveShared(){S.shared=null;S.cur=0;try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}render()}
 Object.assign(actions,{
   sharelink:()=>{shareLink()},
   shareimg:()=>{shareImage()},
   leaveshared:()=>leaveShared(),
 });
-addEventListener('hashchange',()=>{const r=hashRoute();if(r)openShared(r.key,r.gid,r.ply);else if(S.shared)leaveShared()});
+addEventListener('hashchange',()=>{
+  const r=hashRoute(),o=hashOpen();
+  if(r)openShared(r.key,r.gid,r.ply);
+  else if(o){S.pendingOpen=o;if(!tryOpenPending()&&S.games.length){toast('That game is not among your loaded games.');S.pendingOpen=null;try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}}
+  else if(S.shared)leaveShared();
+});
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
   loadBook();
   pushInit().then(()=>{if(S.user&&(S.tab==='progress'||S.tab==='train'))render()}).catch(()=>{});
   const route=hashRoute();if(route)openShared(route.key,route.gid,route.ply); // someone sent you a link to a review
+  const open=hashOpen();if(open)S.pendingOpen=open;                              // a notification sent you to one of your games
   const m=ls.get('cc:months');if(m)$('#months').value=m;
   const u=ls.get('cc:user');
   if(u){$('#source').value=isLi(u)?'lichess':'chesscom';$('#user').value=plainName(u);syncPlaceholder();loadUser(u,true).catch(e=>showErr('loading',e))}else render();

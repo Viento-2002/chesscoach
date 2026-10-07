@@ -255,6 +255,8 @@ async function kick() {
         if (cache.get(name) !== d) continue;           // profile was deleted while the engine was working: drop the result
         d.an[url] = { depth: DEPTH, p, seq: ++d.seq };
         persist(d);
+        noteAnalysed(name, url);
+        if (!queues.has(name)) notifyAnalysisDone(name).catch(e => console.error('analysis notice', e.message)); // this profile's queue is empty
       } catch (e) {
         console.error(new Date().toISOString(), 'analysis failed', name, url, e.message);
         engine.stop();                                 // restart the engine for the next job
@@ -314,6 +316,7 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of buckets) if (!v
    stays in DATA_DIR (never in the repository). Only the real browser push services are ever contacted. */
 let webpush = null;
 try { webpush = require('web-push'); } catch (e) { console.warn('web-push is not installed: reminders are disabled'); }
+const NOTIFY_MODES = ['off', 'batch', 'each'];
 const PUSH_FILE = path.join(DATA, 'push.json'), VAPID_FILE = path.join(DATA, 'vapid.json'), PUSH_DRY = !!process.env.PUSH_DRYRUN;
 let vapid = null;
 if (webpush) {
@@ -356,6 +359,38 @@ async function sendPush(rec, payload) {
   try { await webpush.sendNotification(rec.sub, JSON.stringify(payload), { TTL: 6 * 3600 }); return { ok: true }; }
   catch (e) { console.error(new Date().toISOString(), 'push failed', rec.id, e.statusCode || e.message); return { ok: false, gone: e.statusCode === 404 || e.statusCode === 410 }; }
 }
+// "Your analysis is finished": when the engine has emptied a profile's queue, tell the devices registered for it.
+// Per device the choice is off / after a batch of 3 or more games (the default; also covers the first big backlog)
+// / after every new game. At most one such notice per device every 20 minutes.
+const doneBatch = new Map();  // profile -> urls analysed since its queue was last empty
+const noteAnalysed = (name, url) => { if (!doneBatch.has(name)) doneBatch.set(name, []); doneBatch.get(name).push(url); };
+const NOTICE_GAP = +process.env.NOTICE_GAP || 20 * 60e3;
+async function notifyAnalysisDone(name) {
+  const urls = doneBatch.get(name) || []; doneBatch.delete(name);
+  if (!urls.length || !webpush) return;
+  const targets = Object.values(subs).filter(r => r.user === name && (r.notify || 'batch') !== 'off' && Date.now() - (r.updated || 0) < 14 * 864e5);
+  if (!targets.length) return;
+  const d = cache.get(name) || load(name), who = name.replace(/^li\./, '').toLowerCase(), rows = [];
+  for (const u of urls) {
+    const g = d.games[u], a = d.an[u]; if (!g || !a) continue;
+    const acc = accuracyOf(g, a.p); if (!acc) continue;
+    const mine = g.white.username.toLowerCase() === who;
+    rows.push({ gid: gidOf(u), acc: mine ? acc.w : acc.b, opp: mine ? g.black.username : g.white.username });
+  }
+  if (!rows.length) return;
+  const n = rows.length, avg = Math.round(rows.reduce((s, r) => s + r.acc, 0) / n), best = Math.round(Math.max(...rows.map(r => r.acc)));
+  const msg = n === 1
+    ? { title: '♞ Your latest game is analysed', body: `${Math.round(rows[0].acc)}% accuracy against ${rows[0].opp}. Tap to see what went wrong.`, url: rows[0].gid ? `./#g/${rows[0].gid}` : './' }
+    : { title: `✅ ${n} games analysed`, body: `Average accuracy ${avg}%, your best game ${best}%. Your reviews and training puzzles are ready.`, url: './' };
+  for (const rec of targets) {
+    const mode = rec.notify || 'batch';
+    if (mode === 'batch' && n < 3) continue;
+    if (Date.now() - (rec.lastDone || 0) < NOTICE_GAP) continue;
+    rec.lastDone = Date.now(); saveSubs();
+    const r = await sendPush(rec, { ...msg, tag: 'analysis-done' });
+    if (r.gone) { delete subs[rec.id]; saveSubs(); }
+  }
+}
 async function reminderTick() {
   const now = Date.now();
   for (const rec of Object.values(subs)) {
@@ -392,6 +427,7 @@ async function handlePush(req, res, url, ip) {
     const user = typeof b.user === 'string' && NAME_RE.test(b.user.toLowerCase()) ? b.user.toLowerCase() : null, old = subs[id] || {};
     subs[id] = { id, sub: { endpoint: b.subscription.endpoint, keys: { p256dh: b.subscription.keys.p256dh, auth: b.subscription.keys.auth } }, user,
       hour: intIn(b.hour, 0, 23, 19), min: intIn(b.min, 0, 59, 0), tz: intIn(b.tz, -840, 840, 0), state: cleanState(b.state),
+      notify: NOTIFY_MODES.includes(b.notify) ? b.notify : (old.notify || 'batch'), lastDone: old.lastDone || 0,
       sentDay: old.sentDay || null, created: old.created || now, updated: now };
     if (!old.id) skipTodayIfPassed(subs[id]);
     saveSubs(); return send(res, 200, { ok: true });
@@ -403,7 +439,8 @@ async function handlePush(req, res, url, ip) {
     if (b.tz != null) rec.tz = intIn(b.tz, -840, 840, rec.tz);
     if (b.hour != null) rec.hour = intIn(b.hour, 0, 23, rec.hour);
     if (b.min != null) rec.min = intIn(b.min, 0, 59, rec.min);
-    if (p === '/api/push/prefs') skipTodayIfPassed(rec);                   // a time that has passed starts tomorrow
+    if (NOTIFY_MODES.includes(b.notify)) rec.notify = b.notify;
+    if (p === '/api/push/prefs' && (b.hour != null || b.min != null)) skipTodayIfPassed(rec); // a time that has passed starts tomorrow
     rec.updated = now; saveSubs(); return send(res, 200, { ok: true });
   }
   if (p === '/api/push/unsubscribe') { delete subs[rec.id]; saveSubs(); return send(res, 200, { ok: true }); }
