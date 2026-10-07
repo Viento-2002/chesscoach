@@ -415,6 +415,57 @@ async function handlePush(req, res, url, ip) {
   return send(res, 404, { error: 'not found' });
 }
 
+/* ---------- sharing a review ----------
+   A shared link points at one stored game of a public profile. The data shown is exactly what the profile already
+   exposes: the public game and its engine analysis. Nothing private is involved and nothing is created by looking. */
+const gidOf = url => {
+  let m = String(url).match(/chess\.com\/(?:game\/)?(live|daily)\/(?:game\/)?(\d+)/);
+  if (m) return m[1] + '.' + m[2];
+  m = String(url).match(/lichess\.org\/(\w{8})/);
+  return m ? m[1] : null;
+};
+function findShared(name, gid) {
+  if (!fs.existsSync(userFile(name))) return null;
+  const d = load(name);
+  const g = Object.values(d.games).find(x => gidOf(x.url) === gid);
+  if (!g) return null;
+  const { seq, ...game } = g, a = d.an[g.url];
+  return { d, game, analysis: a ? { depth: a.depth, p: a.p } : null };
+}
+const htmlEsc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Accuracy of both sides from the stored analysis (same formula as the page, on the raw engine numbers).
+function accuracyOf(game, p) {
+  try {
+    const c = new Chess(); if (!c.load_pgn(game.pgn)) return null;
+    const moves = c.history({ verbose: true }); if (p.length !== moves.length + 1) return null;
+    const cp = e => e.m != null ? (e.m > 0 ? 10000 : -10000) : e.c, win = v => 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * Math.max(-1000, Math.min(1000, v)))) - 1);
+    const acc = { w: [], b: [] };
+    moves.forEach((m, i) => {
+      const s = m.color === 'w' ? 1 : -1, best = p[i].b && (m.from + m.to + (m.promotion || '')) === p[i].b;
+      const loss = best ? 0 : Math.max(0, win(s * cp(p[i])) - win(s * cp(p[i + 1])));
+      acc[m.color].push(Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * loss) - 3.1669)));
+    });
+    const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+    return { w: avg(acc.w), b: avg(acc.b), plies: moves.length };
+  } catch (e) { return null; }
+}
+function sharePage(name, gid, ply, hit, origin) {
+  const g = hit.game, who = name.replace(/^li\./, '');
+  const acc = hit.analysis ? accuracyOf(g, hit.analysis.p) : null;
+  const title = `${g.white.username} vs ${g.black.username}: game review`;
+  const mine = g.white.username.toLowerCase() === who.toLowerCase() ? 'white' : 'black';
+  const desc = acc ? `Reviewed with Stockfish 18: ${who} ${Math.round(acc[mine === 'white' ? 'w' : 'b'])}% accuracy, opponent ${Math.round(acc[mine === 'white' ? 'b' : 'w'])}%. Every move labelled, with the reasons behind the mistakes.`
+    : 'A chess game review with Stockfish. Open it to step through the game.';
+  const target = `${origin}/#r/${encodeURIComponent(name)}/${gid}/${ply}`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${htmlEsc(title)}</title><meta name="description" content="${htmlEsc(desc)}">
+<meta property="og:type" content="website"><meta property="og:site_name" content="ChessCoach"><meta property="og:title" content="${htmlEsc(title)}">
+<meta property="og:description" content="${htmlEsc(desc)}"><meta property="og:url" content="${htmlEsc(`${origin}/s/${encodeURIComponent(name)}/${gid}`)}">
+<meta property="og:image" content="${origin}/icons/icon-512.png"><meta name="twitter:card" content="summary">
+<meta http-equiv="refresh" content="0;url=${htmlEsc(target)}"></head><body style="background:#161512;color:#e8e6e3;font:16px system-ui;padding:24px">
+<p>Opening the review… <a style="color:#8fc65a" href="${htmlEsc(target)}">tap here if nothing happens</a>.</p><script>location.replace(${JSON.stringify(target)})</script></body></html>`;
+}
+
 /* ---------- http ---------- */
 const send = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -438,6 +489,20 @@ async function handle(req, res) {
   const url = new URL(req.url, 'http://x'), ip = clientIp(req);
   const m = url.pathname.match(/^\/api\/profile\/([^/]+)$/);
   if (url.pathname.startsWith('/api/push/')) return handlePush(req, res, url, ip);
+  const sh = url.pathname.match(/^\/(api\/share|s)\/([^/]+)\/([\w.-]{3,40})(?:\/(\d{1,3}))?$/);
+  if (sh && req.method === 'GET') {
+    if (limited(ip, 'share', 120, 60e3)) return send(res, 429, { error: 'too many requests' });
+    let name; try { name = decodeURIComponent(sh[2]).trim().toLowerCase(); } catch (e) { return send(res, 400, { error: 'bad name' }); }
+    if (!NAME_RE.test(name)) return send(res, 400, { error: 'invalid username' });
+    const hit = findShared(name, sh[3]);
+    if (!hit) return send(res, 404, { error: 'this review is not available (the profile or the game is not stored here)' });
+    if (sh[1] === 'api/share') return send(res, 200, { key: name, gid: sh[3], game: hit.game, analysis: hit.analysis });
+    // Links in the page always point at the real site (a faked Host header cannot redirect anyone); localhost is allowed for testing.
+    const host = String(req.headers.host || '').toLowerCase();
+    const origin = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) ? 'http://' + host : 'https://chess.vrhconsultancy.nl';
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff' });
+    return res.end(sharePage(name, sh[3], /^\d+$/.test(sh[4] || '') ? sh[4] : '0', hit, origin));
+  }
   if (url.pathname === '/api/health') return send(res, 200, { ok: true, users: userCount, queued, analysing: current ? current.name : null, depth: DEPTH, reminders: webpush ? Object.keys(subs).length : null });
   if (!m) {
     if (STATIC && !url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);

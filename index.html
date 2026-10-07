@@ -95,13 +95,15 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .bg-good{background:#7f9a73}.bg-book{background:var(--book)}.bg-inaccuracy{background:#d8ac12;color:#2a2200}.bg-miss{background:var(--miss)}
 .bg-mistake{background:var(--mist)}.bg-blunder{background:var(--blun)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px}.why{margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}.why ul{margin:4px 0 0;padding-left:20px}.why li{margin:3px 0}
+body.shared header,body.shared nav{display:none}
+#toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#3b3935;color:#fff;padding:10px 16px;border-radius:10px;z-index:99;box-shadow:0 4px 18px rgba(0,0,0,.45);max-width:90%;text-align:center}
 .legend span{font-size:12px;color:var(--mute);white-space:nowrap}.legend .mb{color:#fff}.legend .mb.bg-inaccuracy{color:#2a2200}
 .sumtab td,.sumtab th{padding:4px 8px}.sumtab td.n{text-align:center;font-weight:600;min-width:46px}.sumtab tr.zero td.n{color:var(--mute);font-weight:400}
 .bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;display:flex;min-width:80px}
 .bar i{display:block;height:100%}
 .progress{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:6px}
 .progress i{display:block;height:100%;background:var(--accent);width:0}
-.ctl{display:flex;gap:6px;margin:8px 0;flex-wrap:wrap;align-items:center}
+.ctl{display:flex;gap:6px;margin:8px 0;flex-wrap:wrap;align-items:center}.ctl button{white-space:nowrap}
 .pz-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 @media (max-width:640px){
   :root{--gut:12px}
@@ -759,7 +761,10 @@ function boardHTML(fen,flip,last,arrows,o){
 }
 
 /* ---------- views ---------- */
+const curG=()=>S.shared?S.shared.g:S.games[S.sel]; // the game being reviewed: one of yours, or a shared one
 function render(){
+  document.body.classList.toggle('shared',!!S.shared);
+  if(S.shared){$('#view').innerHTML=sharedView();return}
   const pz=S.user?buildPuzzles():[],now=Date.now();
   const due=pz.filter(p=>!S.train[p.key]||S.train[p.key].due<=now).length;
   document.querySelectorAll('#tabs button').forEach(b=>{
@@ -821,8 +826,9 @@ function gamesView(){
 }
 
 function reviewView(){
-  const g=S.games[S.sel];
-  let h=`<div class="ctl"><button data-a="back">‹ All games</button><button data-a="flip">⇅ Flip</button>
+  const g=curG();loadPieceImgs(); // (the share image needs the piece pictures ready the moment you tap)
+  let h=`<div class="ctl">${S.shared?'':'<button data-a="back">‹ All games</button>'}<button data-a="flip">⇅ Flip</button>
+    ${g.rev?`<button data-a="sharelink" ${gidOf(g.url)&&(S.shared||S.server)?'':'disabled title="Only games stored on the ChessCoach server can be shared as a link"'}>🔗 Share link</button><button data-a="shareimg">🖼 Share image</button>`:''}
     ${/^https?:/.test(g.url)?`<a class="mute" href="${esc(g.url)}" target="_blank" rel="noopener">view on ${/lichess\.org/.test(g.url)?'lichess':'chess.com'} ↗</a>`:''}</div>`;
   if(!g.rev){
     return h+`<div class="card"><h3>${esc(g.white.username)} vs ${esc(g.black.username)}</h3>
@@ -1115,12 +1121,12 @@ const actions={
   open:d=>{S.sel=+d.i;S.cur=d.k?+d.k:0;S.flip=false;S.tab='games';render();scrollTo(0,0)},
   back:()=>{S.sel=null;render()},
   flip:()=>{S.flip=!S.flip;render()},
-  nav:d=>{const g=S.games[S.sel];S.cur=Math.max(0,Math.min(g.moves.length,+d.k));render()},
-  graph:(d,e)=>{const g=S.games[S.sel],r=$('#gsvg').getBoundingClientRect();
+  nav:d=>{const g=curG();S.cur=Math.max(0,Math.min(g.moves.length,+d.k));render()},
+  graph:(d,e)=>{const g=curG(),r=$('#gsvg').getBoundingClientRect();
     S.cur=Math.max(0,Math.min(g.moves.length,Math.round((e.clientX-r.left)/r.width*g.moves.length)));render()},
   analyzeAll:()=>runAnalysis(recent().filter(g=>!g.p)),
   analyze10:()=>runAnalysis(recent().filter(g=>!g.p).slice(0,10)),
-  analyzeOne:()=>runAnalysis([S.games[S.sel]]),
+  analyzeOne:()=>runAnalysis([curG()]),
   stop:()=>{S.stop=true},
   ecol:d=>{S.explColor=d.c;S.expl=[];render()},
   emove:d=>{S.expl.push(d.s);render()},
@@ -1172,7 +1178,7 @@ document.addEventListener('change',e=>{
 });
 document.addEventListener('input',e=>{if(e.target.id==='pgnText')S.pgnDraft=e.target.value});
 document.addEventListener('keydown',e=>{
-  if(S.tab==='games'&&S.sel!=null&&S.games[S.sel]&&S.games[S.sel].rev&&!/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)){
+  if((S.shared||(S.tab==='games'&&S.sel!=null))&&curG()&&curG().rev&&!/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)){
     if(e.key==='ArrowLeft')actions.nav({k:S.cur-1});
     if(e.key==='ArrowRight')actions.nav({k:S.cur+1});
   }
@@ -1648,7 +1654,7 @@ function progressView(){
     <button style="flex:0 0 52px;font-size:20px" data-a="wknav" data-d="1" ${S.weekOff>=0?'disabled':''}>›</button></div>
     <p style="margin:12px 0 0;line-height:1.6">${weekHeadline(w,p)}</p>
     ${running?'<div class="mute hint" style="margin-top:6px">Compared with the same days of last week.</div>':''}
-    <div class="pz-actions"><button data-a="wkcopy">Copy summary</button></div></div>`;
+    <div class="pz-actions"><button data-a="wkcopy">📤 Share summary</button></div></div>`;
   if(!w.n)return h+`<div class="card mute">No games in this week. Use ‹ to look at earlier weeks.</div>`;
   // the numbers
   h+=`<div class="cards">
@@ -1703,7 +1709,7 @@ Object.assign(actions,{
   wkgo:d=>{S.weekOff=+d.o;render();scrollTo(0,0)},
   wkcopy:()=>{
     const cur=weekStartOf(Date.now()/1000),ws=addDays(cur,7*S.weekOff),txt=weekText(weekData(ws),weekData(addDays(ws,-7)),`${fmtDay(ws)} – ${fmtDay(addDays(ws,6))}`);
-    (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>setStatus('Summary copied'),()=>{prompt('Copy your summary:',txt)});
+    shareText('My chess week',txt+'\nchess.vrhconsultancy.nl');
   },
 });
 
@@ -2103,10 +2109,145 @@ document.addEventListener('change',e=>{
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)pushSync()});
 
+/* ======================================================================
+   Sharing: a link to one review, an image card, and the page a shared link opens
+   ====================================================================== */
+const gidOf=url=>{ // short id of a game inside a profile (same rule as the server)
+  let m=String(url).match(/chess\.com\/(?:game\/)?(live|daily)\/(?:game\/)?(\d+)/);
+  if(m)return m[1]+'.'+m[2];
+  m=String(url).match(/lichess\.org\/(\w{8})/);
+  return m?m[1]:null;
+};
+const shareKey=()=>S.shared?S.shared.key:S.user;
+function toast(msg){
+  let t=$('#toast');if(!t){t=document.createElement('div');t.id='toast';document.body.appendChild(t)}
+  t.textContent=msg;t.style.display='block';clearTimeout(toast._t);toast._t=setTimeout(()=>{t.style.display='none'},2600);
+}
+async function shareText(title,text,url){ // the phone's share sheet when there is one, otherwise copy to the clipboard
+  try{if(navigator.share){await navigator.share(url?{title,text,url}:{title,text});return true}}catch(e){if(e&&e.name==='AbortError')return false}
+  const out=url||text;
+  try{await navigator.clipboard.writeText(out);toast(url?'Link copied':'Copied');return true}catch(e){prompt('Copy this:',out);return true}
+}
+async function shareLink(){
+  const g=curG(),gid=gidOf(g.url);if(!gid)return;
+  const url=`${location.origin}/s/${encodeURIComponent(shareKey())}/${gid}/${S.cur}`;
+  await shareText(`${g.white.username} vs ${g.black.username}: game review`,g.rev?`Game review: ${Math.round(g.rev.acc[g.myc])}% accuracy, every move labelled.`:'Game review',url);
+}
+
+/* ---- the image card ---- */
+let _pieceP=null;
+function loadPieceImgs(){
+  if(_pieceP)return _pieceP;
+  const keys=[];for(const c of 'wb')for(const t of 'PNBRQK')keys.push(c+t);
+  return _pieceP=Promise.all(keys.map(k=>new Promise(res=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>res([k,im]);im.onerror=()=>res([k,null]);im.src=PIECE(k[0],k[1])}))).then(a=>Object.fromEntries(a));
+}
+const BADGE_COL={brilliant:'#26c9c3',great:'#5b9bd5',best:'#81b64c',excellent:'#96bc4b',good:'#7f9a73',book:'#c4a27a',inaccuracy:'#d8ac12',miss:'#ff7769',mistake:'#e58f2a',blunder:'#ca3431'};
+async function renderShareImage(g,k){
+  const imgs=await loadPieceImgs(),W=1080,H=1480,cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  const x=cv.getContext('2d'),F='system-ui,Segoe UI,Roboto,sans-serif';
+  const circle=(cx,cy,r,col)=>{x.beginPath();x.arc(cx,cy,r,0,7);x.fillStyle=col;x.fill()};
+  x.fillStyle='#161512';x.fillRect(0,0,W,H);
+  x.textBaseline='middle';x.textAlign='left';
+  x.fillStyle='#e8e6e3';x.font=`700 46px ${F}`;x.fillText('♞ ChessCoach',60,66);
+  x.textAlign='right';x.fillStyle='#9a9792';x.font=`28px ${F}`;x.fillText(g.time?new Date(g.time*1000).toLocaleDateString(undefined,{day:'numeric',month:'long',year:'numeric'}):'',W-60,66);x.textAlign='left';
+  const owner=g.me==='white'?g.white:g.black,flip=g.me==='black',top=flip?g.white:g.black,bot=flip?g.black:g.white;
+  const resWord=g.res==='W'?'Won':g.res==='L'?'Lost':'Drew';
+  x.fillStyle=g.res==='W'?'#81b64c':g.res==='L'?'#ca3431':'#9a9792';x.font=`700 30px ${F}`;x.fillText(`${resWord}`,60,128);
+  x.fillStyle='#9a9792';x.font=`26px ${F}`;
+  let on=g.opening||'';const room=W-60-60-x.measureText(resWord).width-24;
+  while(on.length>8&&x.measureText(on).width>room)on=on.slice(0,-2);
+  if(on!==(g.opening||''))on=on.trimEnd()+'…';
+  x.fillText(on,60+x.measureText(resWord).width+24,128);
+  x.fillStyle='#e8e6e3';x.font=`600 32px ${F}`;x.fillText(`${top.username}${top.rating?'  ('+top.rating+')':''}`,60,176);
+  // board
+  const BX=60,BY=205,SQ=120,grid=boardOfFen(g.fens[k]),mv=k>0?g.moves[k-1]:null;
+  for(let yy=0;yy<8;yy++)for(let xx=0;xx<8;xx++){
+    const r=flip?7-yy:yy,f=flip?7-xx:xx,px=BX+xx*SQ,py=BY+yy*SQ,sq='abcdefgh'[f]+(8-r);
+    x.fillStyle=(r+f)%2===0?'#eeeed2':'#769656';x.fillRect(px,py,SQ,SQ);
+    if(mv&&(sq===mv.from||sq===mv.to)){x.fillStyle='rgba(255,235,60,.45)';x.fillRect(px,py,SQ,SQ)}
+    const ch=grid[r][f];
+    if(ch!=='.'){const im=imgs[(ch===ch.toUpperCase()?'w':'b')+ch.toUpperCase()];if(im)x.drawImage(im,px,py,SQ,SQ)}
+    x.font=`600 20px ${F}`;x.fillStyle=(r+f)%2===0?'#769656':'#eeeed2';
+    if(xx===0){x.textAlign='left';x.fillText(String(8-r),px+6,py+16)}
+    if(yy===7){x.textAlign='right';x.fillText('abcdefgh'[f],px+SQ-6,py+SQ-14)}
+  }
+  x.textAlign='left';
+  if(mv&&g.rev){ // the label of the move on show, like in the app
+    const cls=g.rev.moves[k-1].cls,col=flip?7-'abcdefgh'.indexOf(mv.to[0]):'abcdefgh'.indexOf(mv.to[0]),row=flip?+mv.to[1]-1:8-+mv.to[1];
+    const cx=BX+col*SQ+SQ-24,cy=BY+row*SQ+24;circle(cx,cy,26,'rgba(0,0,0,.35)');circle(cx,cy,23,BADGE_COL[cls]);
+    x.fillStyle=cls==='inaccuracy'?'#2a2200':'#fff';x.font=`700 24px ${F}`;x.textAlign='center';x.fillText(BADGE[cls],cx,cy+1);x.textAlign='left';
+  }
+  x.fillStyle='#e8e6e3';x.font=`600 32px ${F}`;x.fillText(`${bot.username}${bot.rating?'  ('+bot.rating+')':''}`,60,BY+8*SQ+34);
+  if(g.rev){
+    const me=g.myc,op=me==='w'?'b':'w',my=counts(g,me),oc=counts(g,op);
+    const y0=1262;
+    x.fillStyle='#9a9792';x.font=`24px ${F}`;x.fillText('Accuracy',60,y0);
+    x.fillStyle='#e8e6e3';x.font=`700 76px ${F}`;x.fillText(`${Math.round(g.rev.acc[me])}%`,60,y0+62);
+    x.fillStyle='#9a9792';x.font=`28px ${F}`;x.fillText(`opponent ${Math.round(g.rev.acc[op])}%`,60,y0+120);
+    // counts of each label, for the owner of the review
+    let cx=330,cy=y0+8;x.font=`600 26px ${F}`;
+    for(const c of CLASSES){if(!my[c])continue;
+      circle(cx,cy,17,BADGE_COL[c]);x.fillStyle=c==='inaccuracy'?'#2a2200':'#fff';x.font=`700 17px ${F}`;x.textAlign='center';x.fillText(BADGE[c],cx,cy+1);
+      x.textAlign='left';x.fillStyle='#e8e6e3';x.font=`600 26px ${F}`;x.fillText(String(my[c]),cx+26,cy+1);cx+=26+x.measureText(String(my[c])).width+28;
+      if(cx>1000){cx=330;cy+=46}
+    }
+    // evaluation graph with the current move marked
+    const gx=330,gy=y0+68,gw=690,gh=88,w=g.rev.win,n=w.length;
+    x.fillStyle='#2b2926';x.fillRect(gx,gy,gw,gh);x.fillStyle='#1b1a18';x.fillRect(gx,gy+gh/2,gw,gh/2);
+    x.beginPath();w.forEach((v,i)=>{const px=gx+i/(n-1||1)*gw,py=gy+gh-(v/100)*gh;i?x.lineTo(px,py):x.moveTo(px,py)});x.strokeStyle='#eeeeee';x.lineWidth=3;x.lineJoin='round';x.stroke();
+    x.strokeStyle='#81b64c';x.lineWidth=2;const mx=gx+k/(n-1||1)*gw;x.beginPath();x.moveTo(mx,gy);x.lineTo(mx,gy+gh);x.stroke();
+  }
+  x.fillStyle='#6b6964';x.font=`24px ${F}`;x.textAlign='center';x.fillText('Reviewed with Stockfish 18 · chess.vrhconsultancy.nl',W/2,H-22);
+  return new Promise(res=>cv.toBlob(res,'image/png'));
+}
+async function shareImage(){
+  const g=curG();toast('Preparing the image…');
+  let blob=null;try{blob=await renderShareImage(g,S.cur)}catch(e){console.error(e)}
+  if(!blob){toast('Could not create the image');return}
+  const text=`${g.white.username} vs ${g.black.username}${g.rev?`: ${Math.round(g.rev.acc[g.myc])}% accuracy`:''}`;
+  const file=new File([blob],'chesscoach-review.png',{type:'image/png'});
+  try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Game review',text});return}}catch(e){if(e&&e.name==='AbortError')return}
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='chesscoach-review.png';document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),5000);toast('Image saved');
+}
+
+/* ---- the page a shared link opens ---- */
+function sharedView(){
+  const sh=S.shared;
+  let h=`<div class="card" style="display:flex;gap:12px;align-items:center"><div style="font-size:26px">♞</div>
+    <div style="flex:1"><b>Shared review</b><div class="mute hint">${esc(sh.name)}’s game, analysed with Stockfish. In the text, “you” means ${esc(sh.name)}.</div></div>
+    <button class="primary" data-a="leaveshared">Open ChessCoach</button></div>`;
+  if(sh.state==='loading')return h+'<div class="card mute">Loading the review…</div>';
+  if(sh.state==='error')return h+`<div class="card"><div class="coach bad">${esc(sh.msg)}</div><p class="mute" style="margin-bottom:0">The link may be old, or the profile was removed from the server.</p></div>`;
+  return h+reviewView();
+}
+async function openShared(key,gid,ply){
+  S.shared={state:'loading',key,gid,name:plainName(key),g:null,msg:''};S.cur=+ply||0;S.flip=false;render();scrollTo(0,0);
+  try{
+    await loadBook();
+    const r=await fetch(`api/share/${encodeURIComponent(key)}/${encodeURIComponent(gid)}`),j=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(j.error||'This review could not be loaded.');
+    const g=parseRaw(j.game,plainName(key));
+    if(!g)throw new Error('This game could not be read.');
+    if(j.analysis&&!prepare(g,j.analysis))throw new Error('The analysis does not match this game.');
+    S.shared.g=g;S.cur=Math.max(0,Math.min(g.moves.length,S.cur));S.shared.state='ready';
+  }catch(e){S.shared.state='error';S.shared.msg=e.message||String(e)}
+  render();
+}
+const hashRoute=()=>{const m=location.hash.match(/^#r\/([^/]+)\/([\w.-]+)(?:\/(\d+))?$/);return m?{key:decodeURIComponent(m[1]),gid:m[2],ply:m[3]}:null};
+function leaveShared(){S.shared=null;S.cur=0;try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}render()}
+Object.assign(actions,{
+  sharelink:()=>{shareLink()},
+  shareimg:()=>{shareImage()},
+  leaveshared:()=>leaveShared(),
+});
+addEventListener('hashchange',()=>{const r=hashRoute();if(r)openShared(r.key,r.gid,r.ply);else if(S.shared)leaveShared()});
+
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
   loadBook();
   pushInit().then(()=>{if(S.user&&(S.tab==='progress'||S.tab==='train'))render()}).catch(()=>{});
+  const route=hashRoute();if(route)openShared(route.key,route.gid,route.ply); // someone sent you a link to a review
   const m=ls.get('cc:months');if(m)$('#months').value=m;
   const u=ls.get('cc:user');
   if(u){$('#source').value=isLi(u)?'lichess':'chesscom';$('#user').value=plainName(u);syncPlaceholder();loadUser(u,true).catch(e=>showErr('loading',e))}else render();
