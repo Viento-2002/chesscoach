@@ -86,7 +86,8 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .bg-brilliant{background:var(--brill)}.bg-great{background:var(--great)}.bg-best{background:var(--best)}.bg-excellent{background:#96bc4b}
 .bg-good{background:#7f9a73}.bg-book{background:var(--book)}.bg-inaccuracy{background:#d8ac12;color:#2a2200}.bg-miss{background:var(--miss)}
 .bg-mistake{background:var(--mist)}.bg-blunder{background:var(--blun)}
-.legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px}.legend span{font-size:12px;color:var(--mute);white-space:nowrap}.legend .mb{color:#fff}.legend .mb.bg-inaccuracy{color:#2a2200}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px}.why{margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}.why ul{margin:4px 0 0;padding-left:20px}.why li{margin:3px 0}
+.legend span{font-size:12px;color:var(--mute);white-space:nowrap}.legend .mb{color:#fff}.legend .mb.bg-inaccuracy{color:#2a2200}
 .sumtab td,.sumtab th{padding:4px 8px}.sumtab td.n{text-align:center;font-weight:600;min-width:46px}.sumtab tr.zero td.n{color:var(--mute);font-weight:400}
 .bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;display:flex;min-width:80px}
 .bar i{display:block;height:100%}
@@ -271,7 +272,7 @@ async function loadUser(name,sync,manual){
   if(sync&&!(await syncFromServer(false,manual)))await syncGames(); // our server first; chess.com directly if it is unreachable
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
-const REV_V=5;
+const REV_V=6;
 function attach(g,val){ // fast path: the review was saved too, no chess.js work at all
   const p=val&&(Array.isArray(val)?val:val.p),rev=val&&val.rev;
   if(!p||p.length!==g.sans.length+1||!rev||rev.v!==REV_V)return false;
@@ -499,12 +500,123 @@ function sacrifice(m,fenBefore,fenAfter){
   // only counts when this move created the danger (not a piece that was attacked anyway)
   return {net:now.net>already?now.net-(VAL[m.captured]||0):0,piece:now.piece};
 }
+/* ---- "why was this move bad?": reasons found from the position and the engine's reply, in plain words ----
+   Texts use {You}/{you}/{your}/{Your} so the same reason reads right for your moves and for the opponent's. */
+const flipFen=fen=>{const f=fen.split(' ');f[1]=f[1]==='w'?'b':'w';f[3]='-';return f.join(' ')};
+const evalTxt=cp=>(cp>=0?'+':'')+(Math.max(-9.9,Math.min(9.9,cp/100))).toFixed(1);
+function threats(fen){ // captures of pieces (not pawns) that the side to move can make and that win material
+  const out=[],c=new Chess(fen);
+  for(const o of c.moves({verbose:true})){
+    if(!o.captured||VAL[o.captured]<3)continue;
+    const a=new Chess(fen);a.move(o);
+    const net=a.moves({verbose:true}).some(r=>r.to===o.to&&r.captured)?VAL[o.captured]-VAL[o.piece]:VAL[o.captured];
+    if(net>0)out.push({to:o.to,piece:o.captured,net});
+  }
+  return out.sort((x,y)=>y.net-x.net);
+}
+function forkTargets(fen,sq){ // pieces the piece now standing on sq attacks (fen: the other side is to move)
+  const list=[];
+  try{
+    const f=flipFen(fen),c=new Chess(f);
+    for(const o of c.moves({square:sq,verbose:true})){
+      if(!o.captured||VAL[o.captured]<3)continue;
+      const a=new Chess(f);a.move(o);
+      const net=a.moves({verbose:true}).some(r=>r.to===o.to&&r.captured)?VAL[o.captured]-VAL[o.piece]:VAL[o.captured];
+      if(net>=2)list.push({sq:o.to,name:NAME[o.captured],v:VAL[o.captured]});
+    }
+  }catch(e){}
+  return list.sort((x,y)=>y.v-x.v);
+}
+function explainMove(g,i,m,ctx){
+  const {before,after,raw,c,h}=ctx,why=[],mn=Math.floor(i/2)+1,fb=g.fens[i],fa=g.fens[i+1];
+  const cb=povCp(before,c),ca=povCp(after,c);
+  let rep=null,bm=null;
+  if(after.b){try{rep=new Chess(fa).move(parseUci(after.b))}catch(e){}}
+  if(before.b&&uci(m)!==before.b){try{bm=new Chess(fb).move(parseUci(before.b))}catch(e){}}
+  // 1) mate
+  if(after.m!=null&&Math.abs(after.m)<=10&&((c==='w'&&after.m<0)||(c==='b'&&after.m>0))&&rep)why.push(`{You} allowed a forced checkmate in ${Math.abs(after.m)} (it starts with ${rep.san}).`);
+  if(before.m!=null&&Math.abs(before.m)<=10&&((c==='w'&&before.m>0)||(c==='b'&&before.m<0))&&bm)why.push(`{You} missed a forced checkmate in ${Math.abs(before.m)}: ${bm.san} wins by force.`);
+  // 2) material lost to the best reply
+  let lostPiece=false;
+  if(rep&&rep.captured&&VAL[rep.captured]>=3&&(VAL[rep.captured]>(VAL[m.captured]||0)||rep.to!==m.to)){
+    const pn=NAME[rep.captured];lostPiece=true;
+    if(m.captured&&rep.to===m.to&&VAL[rep.captured]-VAL[m.captured]>=2)why.push(`Bad trade: {you} took a ${NAME[m.captured]} but lost a ${pn} to ${rep.san}.`);
+    else if(rep.to===m.to)why.push(`{You} moved {your} ${NAME[m.piece]} to ${m.to}, where it can be captured: ${rep.san}.`);
+    else{
+      let already=false;try{already=m.from!==rep.to&&threats(flipFen(fb)).some(t=>t.to===rep.to)}catch(e){}
+      why.push(already?`{Your} ${pn} on ${rep.to} was already under attack, and {you} played ${m.san} instead of dealing with it: ${rep.san} wins it.`
+                      :`${m.san} left {your} ${pn} on ${rep.to} unprotected: ${rep.san} wins it.`);
+    }
+  }
+  // pawns: not worth a full tactic, but worth naming
+  if(rep&&!lostPiece&&rep.captured==='p'&&raw>=4)why.push(`${m.san} allowed ${rep.san}, winning a pawn.`);
+  // 3) a fork by the best reply
+  if(rep&&!lostPiece){
+    try{
+      const fr=new Chess(fa);fr.move(parseUci(after.b));
+      const tg=forkTargets(fr.fen(),rep.to);
+      if(tg.length>=2)why.push(`${rep.san} forks {your} ${tg[0].name} on ${tg[0].sq} and {your} ${tg[1].name} on ${tg[1].sq}.`);
+      else if(tg.length===1&&rep.san.endsWith('+'))why.push(`${rep.san} gives check and attacks {your} ${tg[0].name} on ${tg[0].sq} at the same time.`);
+    }catch(e){}
+  }
+  // 4) what the better move would have won
+  if(bm){
+    if(bm.captured&&VAL[bm.captured]>=3&&!m.captured)why.push(`{You} missed a free ${NAME[bm.captured]}: ${bm.san}.`);
+    else if(bm.captured==='p'&&!m.captured&&raw>=4)why.push(`{You} missed a chance to win a pawn: ${bm.san}.`);
+    else{
+      try{
+        const fr=new Chess(fb);fr.move(parseUci(before.b));
+        const tg=forkTargets(fr.fen(),bm.to);
+        if(tg.length>=2)why.push(`${bm.san} would have forked a ${tg[0].name} and a ${tg[1].name}.`);
+      }catch(e){}
+    }
+  }
+  // 5) opening and structure principles (only when there is no concrete tactic to point at)
+  if(raw>=4&&!why.length){
+    if(m.piece==='q'&&mn<=6)why.push(`{You} brought the queen out early (move ${mn}); it invites attacks and costs time.`);
+    if(mn<=12&&h.lastTo===m.from&&m.piece!=='p'&&m.piece!=='k'&&!m.captured)why.push(`{You} moved the same piece twice in the opening instead of developing another one.`);
+    if(m.piece==='p'&&/^[fgh]$/.test(m.from[0])&&m.from[1]===(c==='w'?'2':'7')&&h.castled)why.push(`That pawn move weakens the shelter around {your} castled king.`);
+    if(!h.castled&&mn>=9&&mn<=20&&m.piece!=='k'&&new RegExp(c==='w'?'[KQ]':'[kq]').test(fb.split(' ')[2]))why.push(`{Your} king is still in the centre; castling earlier keeps it safe.`);
+  }
+  // 6) the swing, in words
+  if(!why.length||raw>=15){
+    if(cb>=150&&ca<60)why.push(`{You} let a winning advantage slip (${evalTxt(cb)} → ${evalTxt(ca)}).`);
+    else if(Math.abs(cb)<120&&ca<=-200)why.push(`{You} turned a balanced position into a clearly worse one (${evalTxt(cb)} → ${evalTxt(ca)}).`);
+    else if(cb<=-150&&ca<=cb-150)why.push(`{Your} position was already difficult and this made it worse (${evalTxt(cb)} → ${evalTxt(ca)}).`);
+  }
+  // 7) positional reasons: piece activity and development
+  if(!why.length){
+    try{
+      const act=(sq,f)=>new Chess(f).moves({square:sq,verbose:true}).length;
+      if(m.piece!=='p'&&m.piece!=='k'&&m.piece!=='q'){
+        const mb=act(m.from,fb),ma=act(m.to,flipFen(fa));
+        if(ma<=mb-3&&ma<=3)why.push(`{You} moved {your} ${NAME[m.piece]} to a less active square: it controls ${ma} squares there instead of ${mb}.`);
+        else if((m.piece==='n'||m.piece==='b')&&!m.captured&&(c==='w'?+m.to[1]<+m.from[1]:+m.to[1]>+m.from[1]))why.push(`Retreating the ${NAME[m.piece]} cost time and gave up active play.`);
+      }
+      if(!why.length&&mn<=14&&m.piece!=='n'&&m.piece!=='b'&&!m.captured){
+        const bd=new Chess(fb),homes=c==='w'?['b1','g1','c1','f1']:['b8','g8','c8','f8'];
+        const und=homes.filter(s=>{const p=bd.get(s);return p&&p.color===c&&(p.type==='n'||p.type==='b')}).length;
+        if(und>=2)why.push(`{You} still had ${und} pieces on their starting squares, and ${m.san} did not develop one.`);
+      }
+    }catch(e){}
+  }
+  // 8) the idea of the better move
+  if(!why.length&&bm){
+    if(/[kq]/.test(bm.flags))why.push(`Castling to safety was better here.`);
+    else if(bm.san.endsWith('+'))why.push(`${bm.san} was better: a check that keeps the initiative.`);
+    else if(mn<=14&&(bm.piece==='n'||bm.piece==='b')&&bm.from[1]===(c==='w'?'1':'8'))why.push(`${bm.san} was better: it develops a piece, while ${m.san} did not help {your} development.`);
+  }
+  if(!why.length)why.push(`No immediate tactic: ${m.san} simply gave up about ${Math.round(raw)}% of the winning chances. Play through the engine's line to see what it keeps.`);
+  return why.slice(0,3);
+}
+const pron=(s,mine)=>String(s).replace(/\{(You|you|your|Your)\}/g,(_,w)=>mine?w:({You:'They',you:'they',your:'their',Your:'Their'})[w]);
+
 // Like chess.com, labels are more forgiving for lower-rated players: a slip that costs a 2200 player a lot of
 // winning chances costs a 900 player fewer (the opponent is also likely to miss it). The evaluation is scaled
 // before it becomes a win chance: x0.5 at 600 and below, rising to x1.0 at 2200 and above. Unknown rating: x1.
 const leniency=r=>r?Math.max(0.5,Math.min(1,0.5+(r-600)/1600*0.5)):1;
 function review(g){
-  const moves=[],acc={w:[],b:[]};
+  const moves=[],acc={w:[],b:[]},hist={w:{lastTo:null,castled:false},b:{lastTo:null,castled:false}};
   let inBook=true,bookLabel='',prevLoss=0,prevMover=null;
   for(let i=0;i<g.moves.length;i++){
     const m=g.moves[i],c=m.color,before=g.p[i],after=g.p[i+1];
@@ -554,6 +666,8 @@ function review(g){
       const mm=before.m!=null?(c==='w'?before.m:-before.m):0;
       if(mm>0)tags.push({k:'missedmate',san:t&&t.san});
     }
+    if(cls==='inaccuracy'||cls==='miss'||cls==='mistake'||cls==='blunder'){try{info.why=explainMove(g,i,m,{before,after,raw,c,h:hist[c]})}catch(e){}}
+    hist[c].lastTo=m.to;if(/[kq]/.test(m.flags))hist[c].castled=true;
     acc[c].push(Math.max(0,Math.min(100,103.1668*Math.exp(-0.04354*raw)-3.1669)));
     // san/uci/fen are kept so lists, insights and training never need the slow full parse of the game
     moves.push({loss,raw,cls,bestSan,tags,info,mover:c,i,san:m.san,uci:uci(m),fen:(raw>=10||loss>=10)?g.fens[i]:undefined});
@@ -721,7 +835,8 @@ function coachBox(g,k,asTrain){
     t+=`<br>${who==='You'?'You':'They'} lost about <b>${Math.round(x.loss)}%</b> win chance.`;
     if(x.cls==='miss')t+=` The last move gave ${whose==='your'?'you':'them'} an advantage, and this move let it slip.`;
     if(x.bestSan)t+=`<br>Better was <b class="c-best">${x.bestSan}</b>.${line}`;
-    x.tags.forEach(tag=>{
+    if(inf.why&&inf.why.length)t+=`<div class="why"><b>Why was this bad?</b><ul>${inf.why.map(s=>`<li>${esc(pron(s,mine))}</li>`).join('')}</ul></div>`;
+    else x.tags.forEach(tag=>{
       if(tag.k==='hung')t+=`<br>⚠ This leaves ${whose} position open to <b>${tag.san}</b>, winning a ${NAME[tag.piece]}.`;
       if(tag.k==='missedcap')t+=`<br>⚠ ${tag.san} would have won a ${NAME[tag.piece]}.`;
       if(tag.k==='missedmate')t+=`<br>⚠ There was a forced mate${tag.san?` starting with ${tag.san}`:''}.`;
