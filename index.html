@@ -267,6 +267,7 @@ async function loadUser(name,sync,manual){
     S.games.forEach(g=>{if(pm[g.url]&&!attach(g,pm[g.url]))pending.push([g,pm[g.url]])});
     S.train=tm||{};
     S.log=(await DB.get(K('log')))||[];
+    for(const k in _themes)delete _themes[k];Object.assign(_themes,(await DB.get(K('themes')))||{});
   }catch(e){}
   sortGames();
   setStatus(S.games.length?`${S.games.length} saved games`:'');
@@ -332,6 +333,7 @@ async function syncFromServer(poll,manual){
   // don't rebuild the page under someone who is reviewing a game or solving a puzzle
   if(!poll||(S.sel==null&&!S.tr&&(fresh.length||added))){try{render()}catch(e){showErr('showing the page',e)}}
   pollSoon(p.pending?15000:60000); // faster while the server is busy analysing, otherwise once a minute
+  setTimeout(warmThemes,2500);     // recognise the themes of your puzzles quietly in the background
   return true;
 }
 let pollTimer=null;
@@ -904,14 +906,16 @@ function mistakeView(pz){
   const sel=reveal?null:(t.sel||(t.hint?p.best.slice(0,2):null));
   h+=`<div class="row"><div>
     <div class="boardwrap">${boardHTML(p.fen,flip,t.last,arrows,{click:t.state==='ask',sel,targets:t.targets})}</div></div>
-    <div class="side"><div class="card"><div class="mute hint">Puzzle ${t.idx+1} of ${t.queue.length}${p.n>1?` · you’ve gone wrong here ${p.n} times`:''}</div>
+    <div class="side"><div class="card">${t.theme?`<div class="chips" style="margin:0 0 4px"><span class="chip on">${TACTICS.find(x=>x.k===t.theme).label}</span></div><div class="mute hint" style="margin-bottom:8px">${TACTICS.find(x=>x.k===t.theme).tip}</div>`:''}<div class="mute hint">Puzzle ${t.idx+1} of ${t.queue.length}${p.n>1?` · you’ve gone wrong here ${p.n} times`:''}</div>
     <h3 style="margin-top:6px">${p.color==='w'?'White':'Black'} to move: find the best move</h3>
     <div class="mute hint">From your game vs ${esc(p.g.opp)} · ${esc(p.g.opening)} · move ${Math.floor(p.i/2)+1}</div>`;
   if(t.state==='ask')h+=`<p class="mute">Tap a piece, then tap where it should go.</p><div class="pz-actions"><button data-a="thint">💡 Hint</button><button data-a="treveal">Show answer</button><button data-a="tskip">Skip</button></div>`;
   if(t.state==='thinking')h+=`<div class="coach">Checking <b>${esc(t.played)}</b> with Stockfish…</div>`;
   if(t.state==='wrong')h+=`<div class="coach bad">${t.msg}</div><div class="pz-actions"><button class="primary" data-a="tretry">Try again</button><button data-a="treveal">Show answer</button></div>`;
   if(reveal){
-    h+=`<div class="coach ${t.state==='right'?'ok':'bad'}">${t.state==='right'?t.msg:`The best move was <b class="c-best">${p.bestSan}</b>.`}</div>
+    const th=puzzleThemes(p),tm=th.find(x=>x.k===t.theme)||th[0];
+    const motif=tm?`<div class="coach ok">🎯 <b>${TACTICS.find(x=>x.k===tm.k).label}:</b> ${esc(tm.t)}</div>`:'';
+    h+=`<div class="coach ${t.state==='right'?'ok':'bad'}">${t.state==='right'?t.msg:`The best move was <b class="c-best">${p.bestSan}</b>.`}</div>${motif}
       <div class="mute hint" style="margin-bottom:6px">What happened in your game:</div>${coachBox(p.g,p.i+1,true)}
       <div class="pz-actions"><button class="primary" data-a="tnext">${t.idx+1>=t.queue.length?'Finish':'Next puzzle ›'}</button>
       <button data-a="open" data-i="${S.games.indexOf(p.g)}" data-k="${p.i+1}">Open game</button></div>`;
@@ -919,13 +923,14 @@ function mistakeView(pz){
   h+=`<div style="margin-top:10px"><a href="#" data-a="tquit" class="mute hint">End session</a></div></div></div></div>`;
   return h;
 }
-function trainStart(all){
-  const pz=buildPuzzles();
+function trainStart(all,theme){
+  let pz=buildPuzzles();
+  if(theme)pz=pz.filter(p=>puzzleThemes(p).some(x=>x.k===theme));
   let list=(all?pz:pz.filter(isDue)).sort((a,b)=>b.n-a.n||b.loss-a.loss);
   if(!all)list=list.slice(0,10);
   if(all)list=list.sort(()=>Math.random()-.5).slice(0,20);
   if(!list.length)return;
-  S.tr={queue:list.map(p=>p.key),idx:0,n:0,right:0,retried:new Set()};resetPuzzle();
+  S.tr={queue:list.map(p=>p.key),idx:0,n:0,right:0,retried:new Set(),theme:theme||null};resetPuzzle();
 }
 function resetPuzzle(){Object.assign(S.tr,{state:'ask',sel:null,targets:[],last:null,hint:false,counted:false,played:'',msg:''})}
 function curPuzzle(){return buildPuzzles().find(x=>x.key===S.tr.queue[S.tr.idx])}
@@ -1367,8 +1372,9 @@ function goalView(){
 /* ---- Train: your mistakes, or opening drills ---- */
 function trainView(pz){
   const m=S.trainMode;
-  return `<div class="seg"><button class="${m==='mistakes'?'on':''}" data-a="tmode" data-m="mistakes">Mistakes</button><button class="${m==='openings'?'on':''}" data-a="tmode" data-m="openings">Openings</button><button class="${m==='endgames'?'on':''}" data-a="tmode" data-m="endgames">Endgames</button></div>`
-    +(m==='openings'?drillView():m==='endgames'?egView():mistakeView(pz));
+  const tab=(k,l)=>`<button class="${m===k?'on':''}" data-a="tmode" data-m="${k}">${l}</button>`;
+  return `<div class="seg">${tab('mistakes','Mistakes')}${tab('tactics','Tactics')}${tab('openings','Openings')}${tab('endgames','Endgames')}</div>`
+    +(m==='openings'?drillView():m==='endgames'?egView():m==='tactics'?(S.tr?mistakeView(pz):tacticsMenu(pz)):mistakeView(pz));
 }
 function famSet(label,variation){
   if(!BOOK||!BOOK.f[label])return null;
@@ -1822,6 +1828,136 @@ Object.assign(actions,{
   egnew:()=>{if(S.eg)egStart(S.eg.def.id)},
   eghint:()=>{if(S.eg&&S.eg.state==='ask'){S.eg.hint=Math.min(2,S.eg.hint+1);render()}},
   egback:()=>{const g=S.eg;if(g){g.state='ask';g.msg='';g.hint=1;g.last=null;render()}},
+});
+
+/* ======================================================================
+   Tactics by theme: your own missed tactics, recognised and grouped
+   ====================================================================== */
+const TACTICS=[
+  {k:'mate',label:'Checkmate',tip:'Look at every check, and at moves that take away the last squares of the enemy king.'},
+  {k:'fork',label:'Forks',tip:'Find a move that attacks two things at once. Knights, pawns and queens are the best forkers.'},
+  {k:'pin',label:'Pins & skewers',tip:'Look for a piece that cannot move because something more valuable stands behind it.'},
+  {k:'disc',label:'Discovered attacks',tip:'Moving one piece can open a line for another, especially with check.'},
+  {k:'free',label:'Free material',tip:'Look for undefended pieces, and for captures that win more than they lose.'},
+  {k:'defence',label:'Defence',tip:'Before attacking, ask what your opponent threatens, then stop it, ideally with a threat of your own.'},
+  {k:'promo',label:'Promotion',tip:'Passed pawns decide games: push, support and promote.'},
+  {k:'safe',label:'Safety first',tip:'Check that every piece is protected after your move. Do not leave anything hanging.'}
+];
+const sqName=(x,y)=>'abcdefgh'[x]+(8-y);
+const withTurn=(fen,t)=>{const f=fen.split(' ');f[1]=t;f[3]='-';return f.join(' ')};
+function pinnedPieces(fen,color){ // pieces of `color` that cannot move because their king would be exposed
+  const out=[];
+  try{
+    if(new Chess(withTurn(fen,color)).in_check())return out;
+    const b=boardOfFen(fen);
+    for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+      const ch=b[y][x];if(ch==='.'||ch.toLowerCase()==='k'||((ch===ch.toUpperCase())?'w':'b')!==color)continue;
+      const nb=b.map(r=>r.slice());nb[y][x]='.';
+      if(new Chess(fenOfBoard(nb,color)).in_check())out.push({sq:sqName(x,y),name:NAME[ch.toLowerCase()]});
+    }
+  }catch(e){}
+  return out;
+}
+function skewerOf(fen,mv){ // the moved bishop/rook/queen attacks a valuable piece with another piece behind it
+  if(!'bqr'.includes(mv.piece))return null;
+  const b=boardOfFen(fen),f=mv.to.charCodeAt(0)-97,r=8-+mv.to[1];
+  const dirs=mv.piece==='b'?[[1,1],[1,-1],[-1,1],[-1,-1]]:mv.piece==='r'?[[1,0],[-1,0],[0,1],[0,-1]]:[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+  const enemy=ch=>ch!=='.'&&((ch===ch.toUpperCase())!==(mv.color==='w')),val=ch=>ch.toLowerCase()==='k'?100:VAL[ch.toLowerCase()];
+  for(const [dx,dy] of dirs){
+    let x=f+dx,y=r+dy,first=null;
+    while(x>=0&&x<8&&y>=0&&y<8){
+      const ch=b[y][x];
+      if(ch!=='.'){
+        if(!first){if(!enemy(ch))break;first={ch,x,y}}
+        else{
+          if(enemy(ch)){
+            const A=val(first.ch),B=val(ch);
+            if(A>B&&A>=5)return `it skewers the ${NAME[first.ch.toLowerCase()]} on ${sqName(first.x,first.y)}: when it moves, the ${NAME[ch.toLowerCase()]} on ${sqName(x,y)} is lost`;
+            if(B>A&&B>=9&&ch.toLowerCase()!=='k')return `it pins the ${NAME[first.ch.toLowerCase()]} on ${sqName(first.x,first.y)} to the ${NAME[ch.toLowerCase()]} on ${sqName(x,y)}`;
+          }
+          break;
+        }
+      }
+      x+=dx;y+=dy;
+    }
+  }
+  return null;
+}
+function tacticThemes(fen,u,before){ // what kind of tactic is this move?
+  const out=[],c=new Chess(fen),mv=c.move(parseUci(u));
+  if(!mv)return out;
+  const fa=c.fen(),me=mv.color,foe=me==='w'?'b':'w';
+  const mm=before&&before.m!=null?(me==='w'?before.m:-before.m):0;
+  if(c.in_checkmate())out.push({k:'mate',t:'it is checkmate in one'});
+  else if(mm>0&&mm<=6)out.push({k:'mate',t:`it starts a forced checkmate in ${mm}`});
+  const tg=forkTargets(fa,mv.to);
+  if(tg.length>=2)out.push({k:'fork',t:`it forks the ${tg[0].name} on ${tg[0].sq} and the ${tg[1].name} on ${tg[1].sq}`});
+  else if(tg.length===1&&c.in_check())out.push({k:'fork',t:`it gives check and attacks the ${tg[0].name} on ${tg[0].sq} at the same time`});
+  const before_pins=pinnedPieces(fen,foe).map(p=>p.sq),np=pinnedPieces(fa,foe).filter(p=>!before_pins.includes(p.sq));
+  if(np.length)out.push({k:'pin',t:`it pins the ${np[0].name} on ${np[0].sq} to the king`});
+  const sk=skewerOf(fa,mv);if(sk)out.push({k:'pin',t:sk});
+  if(c.in_check()){ // a check that does not come from the piece that just moved
+    try{const b=boardOfFen(fa);b[8-+mv.to[1]][mv.to.charCodeAt(0)-97]='.';if(new Chess(fenOfBoard(b,foe)).in_check())out.push({k:'disc',t:'it uncovers a check from another piece (a discovered check)'})}catch(e){}
+  }
+  if(mv.captured){
+    const rec=c.moves({verbose:true}).some(r=>r.to===mv.to&&r.captured),net=VAL[mv.captured]-(rec?VAL[mv.piece]:0);
+    if(VAL[mv.captured]>=3&&net>=2)out.push({k:'free',t:`it wins a ${NAME[mv.captured]}${rec?' and the trade is in your favour':', which was not protected'}`});
+    else if(mv.captured==='p'&&!rec)out.push({k:'free',t:'it wins a loose pawn'});
+  }
+  if(mv.promotion)out.push({k:'promo',t:'it promotes the pawn'});
+  try{
+    const thr=threats(flipFen(fen));
+    if(thr.length&&!mv.captured){const now=threats(fa);if(!now.length||now[0].net<thr[0].net)out.push({k:'defence',t:`it saves your ${NAME[thr[0].piece]} on ${thr[0].to} from being captured`})}
+  }catch(e){}
+  return out;
+}
+// Recognising themes takes a moment per puzzle, so it is done once, in small background steps, and remembered.
+const _themes={};
+const themeKey=p=>p.key+'|'+p.best;
+function puzzleThemes(p){
+  const key=themeKey(p);
+  if(_themes[key])return _themes[key];
+  let t=[];try{t=tacticThemes(p.fen,p.best,p.before)}catch(e){}
+  const why=((p.g.rev.moves[p.i]||{}).info||{}).why||[],hang=why.find(w=>/unprotected|where it can be captured|already under attack/.test(w));
+  if(hang)t.push({k:'safe',t:pron(hang,true)});
+  return _themes[key]=t;
+}
+let _warming=false;
+function warmThemes(){
+  if(_warming||!S.user)return;
+  const todo=buildPuzzles().filter(p=>!_themes[themeKey(p)]);
+  if(!todo.length)return;
+  _warming=true;let i=0;const user=S.user;
+  const step=()=>{
+    const t0=performance.now();
+    while(i<todo.length&&performance.now()-t0<30){puzzleThemes(todo[i]);i++}
+    if(i<todo.length){S.themeLeft=todo.length-i;setTimeout(step,0);return}
+    _warming=false;S.themeLeft=0;
+    if(S.user===user)save(K('themes'),_themes);
+    if(S.tab==='train'&&S.trainMode==='tactics'&&!S.tr)render();
+  };
+  setTimeout(step,0);
+}
+function tacticsMenu(pz){
+  if(pz.some(p=>!_themes[themeKey(p)])){
+    warmThemes();
+    return `<div class="card"><h3>Tactics by theme</h3><p class="mute" style="margin:0">Looking through your ${pz.length} puzzles to see what kind of tactic each one is… (once only; results are remembered)</p></div>`;
+  }
+  pz.forEach(p=>{p.themes=puzzleThemes(p)});
+  const rows=TACTICS.map(T=>{const list=pz.filter(p=>p.themes.some(t=>t.k===T.k));return {T,n:list.length,due:list.filter(isDue).length,mastered:list.filter(p=>S.train[p.key]&&S.train[p.key].box>=4).length}});
+  const total=pz.length,tagged=pz.filter(p=>p.themes.length).length;
+  let h=`<div class="card"><h3>Tactics by theme</h3><p class="mute" style="margin:0">These are the tactics <b>you</b> missed in your own games, sorted by what kind of tactic each one is. Train one theme at a time until the pattern jumps out at you.${total?` (${tagged} of your ${total} puzzles have a recognised theme.)`:''}</p></div>`;
+  if(!total)return h+'<div class="card mute">No puzzles yet: they come from the mistakes in your analysed games.</div>';
+  h+=`<div class="card"><h3>Pick a theme</h3>`;
+  for(const {T,n,due,mastered} of rows){
+    h+=`<div class="brow" style="grid-template-columns:1fr auto;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
+      <div><b>${T.label}</b> <span class="mute hint">· ${n} puzzle${n===1?'':'s'}${due?` · <b style="color:var(--accent)">${due} due</b>`:''}${mastered?` · ${mastered} mastered`:''}</span><div class="mute hint">${T.tip}</div></div>
+      <button class="${due?'primary':''}" data-a="tactheme" data-t="${T.k}" ${n?'':'disabled'}>${n?(due?'Train':'Practise'):'none yet'}</button></div>`;
+  }
+  return h+'</div>';
+}
+Object.assign(actions,{
+  tactheme:d=>{const pz=buildPuzzles().filter(p=>puzzleThemes(p).some(x=>x.k===d.t));trainStart(pz.some(isDue)?false:true,d.t);render();scrollTo(0,0)},
 });
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
