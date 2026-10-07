@@ -26,7 +26,7 @@ Pick the site, enter your username, load your games, and let Stockfish show you 
 - **Analytics**: results by colour, time control, opponent strength, time of day and weekday; how you win and lose; streaks and tilt; time management from the clocks; accuracy trends; mistake patterns by move number and piece; conversion and resilience.
 - **Openings explorer**: click through the lines you actually play, with your win/draw/loss score.
 - **Insights**: your weakest phase of the game, recurring opening mistakes, openings that cost you the most.
-- **Train your mistakes**: puzzles built from your own blunders, with a visual replay after each one (red arrow for what you played, orange for how it is punished, green for the best line, step-through chips and win-chance bars), with spaced repetition (a position you solve returns after 1, 3, 7, 21, 60 days; one you miss returns soon).
+- **Train your mistakes**: puzzles built from your own blunders, with a visual replay after each one, also available for every mistake in a game review (red arrow for what you played, orange for how it is punished, green for the best line, step-through chips and win-chance bars), with spaced repetition (a position you solve returns after 1, 3, 7, 21, 60 days; one you miss returns soon).
 - **Saved in your browser**: enter your username once; games, analysis and training progress are kept locally (IndexedDB), and only new games are fetched next time.
 - **Add your own games**: paste or upload any PGN (chess.com, lichess, over the board).
 - **Mobile friendly**: tap-to-move puzzles and a layout that fits phones.

@@ -891,10 +891,12 @@ function reviewView(){
     arrows.push({...parseUci(g.p[k-1].b),color:'#81b64c'});
     arrows.push({from:mv.from,to:mv.to,color:rv.loss>=20?'#ca3431':'#e58f2a'});
   }
+  const bad=rv&&['inaccuracy','miss','mistake','blunder'].includes(rv.cls)&&g.p[k-1].b;
+  const RP=bad&&S.rp&&S.rp.k===k&&S.rp.g===g?S.rp:null,RV=RP?pzReplay({g,i:k-1,fen:g.fens[k-1],color:mv.color,before:g.p[k-1],best:g.p[k-1].b,playedSan:mv.san,who:mv.color===g.myc?'your':'their'},RP):null;
   const wp=r.win[k],topName=flip?g.white:g.black,botName=flip?g.black:g.white;
   h+=`<div class="row"><div>
     <div class="mute" style="margin-bottom:4px">${esc(topName.username)} (${topName.rating||'?'})</div>
-    <div class="boardwrap"><div class="evalbar"><div style="${flip?'top':'bottom'}:0;height:${wp}%"></div></div>${boardHTML(g.fens[k],flip,mv&&[mv.from,mv.to],arrows,{badge:mv?{sq:mv.to,cls:rv.cls}:null})}</div>
+    <div class="boardwrap"><div class="evalbar"><div style="${flip?'top':'bottom'}:0;height:${wp}%"></div></div>${RV?boardHTML(RV.fen,flip,RV.last,RV.arrows,{}):boardHTML(g.fens[k],flip,mv&&[mv.from,mv.to],arrows,{badge:mv?{sq:mv.to,cls:rv.cls}:null})}</div>
     <div class="mute" style="margin-top:4px">${esc(botName.username)} (${botName.rating||'?'})</div>
     <div class="ctl"><button data-a="nav" data-k="0">⏮</button><button data-a="nav" data-k="${k-1}">◀</button><button data-a="nav" data-k="${k+1}">▶</button><button data-a="nav" data-k="${g.moves.length}">⏭</button></div>
   </div><div class="side">`;
@@ -902,6 +904,8 @@ function reviewView(){
   h+=`<div class="cards">
     <div class="stat"><div class="mute">Your accuracy</div><div class="v">${r.acc[g.myc].toFixed(0)}%</div></div>
     <div class="stat"><div class="mute">Opponent</div><div class="v">${r.acc[g.myc==='w'?'b':'w'].toFixed(0)}%</div></div></div>`;
+  if(RV)h+=`<div class="card"><div class="ctl" style="margin:0 0 4px"><b style="flex:1">🎬 Replay: ${esc(mv.san)}${SYM[rv.cls]} (${LABEL[rv.cls]})</b><button data-a="rpoff">✕ Close</button></div>${RV.html}</div>`;
+  else if(bad)h+=`<div class="ctl"><button class="primary" data-a="rpon">🎬 Replay what went wrong</button></div>`;
   h+=coachBox(g,k);
   h+=`<div class="card"><h3>Game review</h3><div class="tw"><table class="sumtab"><tr><th></th><th>You</th><th>Opp.</th></tr>`;
   CLASSES.forEach(c=>{
@@ -1037,23 +1041,23 @@ function pzSteps(p,which){
   return out;
 }
 function pzReplay(p,t){
-  const g=p.g,which=t.vw||'yours';
+  const g=p.g,which=t.vw||'yours',own=p.who!=='their';
   const steps=pzSteps(p,which),s=Math.max(0,Math.min(steps.length,t.vs||0)),nxt=steps[s];
   const bar=(label,v,col)=>`<div class="wbar"><span>${label}</span><div><i style="width:${Math.round(v)}%;background:${col}"></i></div><b>${Math.round(v)}%</b></div>`;
   const wb=winPct(povCp(g.p[p.i],p.color)),wa=winPct(povCp(g.p[p.i+1],p.color));
-  const chips=steps.map((st,k)=>`<button class="chip ${s===k+1?'on':''}" style="border-color:${st.col}" data-a="vstep" data-s="${k+1}">${st.mine?'You':'Opp'} ${esc(st.san)}</button>`).join('');
-  const mvName=st=>(st.mine?'your':'the opponent’s');
+  const chips=steps.map((st,k)=>`<button class="chip ${s===k+1?'on':''}" style="border-color:${st.col}" data-a="vstep" data-s="${k+1}">${st.mine===own?'You':'Opp'} ${esc(st.san)}</button>`).join('');
+  const mvName=st=>(st.mine===own?'your':'the opponent’s');
   let cap;
   if(!nxt)cap=s?'End of the line.':'';
-  else if(s===0)cap=which==='yours'?`In the game you played <b style="color:#ca3431">${esc(nxt.san)}</b> (red arrow). Tap ▶ to see what happens next.`:`The best move is <b class="c-best">${esc(nxt.san)}</b> (green arrow). Tap ▶ to follow the line.`;
+  else if(s===0)cap=which==='yours'?`In the game ${own?'you':'they'} played <b style="color:#ca3431">${esc(nxt.san)}</b> (red arrow). Tap ▶ to see what happens next.`:`The best move is <b class="c-best">${esc(nxt.san)}</b> (green arrow). Tap ▶ to follow the line.`;
   else cap=`Next: <b style="color:${nxt.col}">${esc(nxt.san)}</b> (${mvName(nxt)} move).`;
   if(s>0)cap=`<b>${esc(steps[s-1].san)}</b> played. `+cap;
-  const html=`<div class="chips" style="margin:6px 0"><button class="chip ${which==='yours'?'on':''}" data-a="vtab" data-k="yours">❌ What you played</button><button class="chip ${which==='best'?'on':''}" data-a="vtab" data-k="best">✅ Best move</button></div>
+  const html=`<div class="chips" style="margin:6px 0"><button class="chip ${which==='yours'?'on':''}" data-a="vtab" data-k="yours">❌ What ${own?'you':'they'} played</button><button class="chip ${which==='best'?'on':''}" data-a="vtab" data-k="best">✅ Best move</button></div>
     <div class="chips" style="margin:4px 0">${chips}</div>
     <div class="ctl" style="margin:4px 0"><button data-a="vstep" data-s="${Math.max(0,s-1)}" ${s?'':'disabled'}>◀</button><button data-a="vstep" data-s="${Math.min(steps.length,s+1)}" ${s<steps.length?'':'disabled'}>▶</button><button data-a="vstep" data-s="0" ${s?'':'disabled'}>⟲</button></div>
     <div class="coach" style="margin:6px 0">${cap}</div>
-    <div class="wbars">${bar('Before your move',wb,'#9a9792')}${bar('After '+esc(p.playedSan||'your move'),wa,wa<wb-4?'#ca3431':'#81b64c')}${bar('After best move',wb,'#81b64c')}</div>
-    <div class="mute hint" style="margin:2px 0 6px">Your chance to win the game (from your side).</div>`;
+    <div class="wbars">${bar(own?'Before your move':'Before their move',wb,'#9a9792')}${bar('After '+esc(p.playedSan||'the move'),wa,wa<wb-4?'#ca3431':'#81b64c')}${bar('After best move',wb,'#81b64c')}</div>
+    <div class="mute hint" style="margin:2px 0 6px">${own?'Your':'Their'} chance to win the game.</div>`;
   return {fen:s?steps[s-1].fen:p.fen,last:s?[steps[s-1].from,steps[s-1].to]:null,arrows:nxt?[{from:nxt.from,to:nxt.to,color:nxt.col}]:[],html};
 }
 function trainStart(all,theme){
@@ -2844,8 +2848,10 @@ Object.assign(actions,{
 });
 
 Object.assign(actions,{
-  vtab:d=>{S.tr.vw=d.k;S.tr.vs=0;render()},
-  vstep:d=>{S.tr.vs=+d.s;render()},
+  vtab:d=>{const T=S.tab==='games'&&S.rp?S.rp:S.tr;T.vw=d.k;T.vs=0;render()},
+  vstep:d=>{const T=S.tab==='games'&&S.rp?S.rp:S.tr;T.vs=+d.s;render()},
+  rpon:()=>{S.rp={g:curG(),k:S.cur,vw:'yours',vs:0};render()},
+  rpoff:()=>{S.rp=null;render()},
 });
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
