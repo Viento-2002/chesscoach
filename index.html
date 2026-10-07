@@ -271,7 +271,7 @@ async function loadUser(name,sync,manual){
   if(sync&&!(await syncFromServer(false,manual)))await syncGames(); // our server first; chess.com directly if it is unreachable
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
-const REV_V=4;
+const REV_V=5;
 function attach(g,val){ // fast path: the review was saved too, no chess.js work at all
   const p=val&&(Array.isArray(val)?val:val.p),rev=val&&val.rev;
   if(!p||p.length!==g.sans.length+1||!rev||rev.v!==REV_V)return false;
@@ -499,20 +499,26 @@ function sacrifice(m,fenBefore,fenAfter){
   // only counts when this move created the danger (not a piece that was attacked anyway)
   return {net:now.net>already?now.net-(VAL[m.captured]||0):0,piece:now.piece};
 }
+// Like chess.com, labels are more forgiving for lower-rated players: a slip that costs a 2200 player a lot of
+// winning chances costs a 900 player fewer (the opponent is also likely to miss it). The evaluation is scaled
+// before it becomes a win chance: x0.5 at 600 and below, rising to x1.0 at 2200 and above. Unknown rating: x1.
+const leniency=r=>r?Math.max(0.5,Math.min(1,0.5+(r-600)/1600*0.5)):1;
 function review(g){
   const moves=[],acc={w:[],b:[]};
   let inBook=true,bookLabel='',prevLoss=0,prevMover=null;
   for(let i=0;i<g.moves.length;i++){
     const m=g.moves[i],c=m.color,before=g.p[i],after=g.p[i+1];
-    const wb=winPct(povCp(before,c)),wa=winPct(povCp(after,c));
+    const sc=leniency(c==='w'?g.white.rating:g.black.rating);
+    const wb=winPct(povCp(before,c)*sc),wa=winPct(povCp(after,c)*sc);   // rating-adjusted: drives the labels
     const isBest=!!before.b&&uci(m)===before.b;
+    const raw=isBest?0:Math.max(0,winPct(povCp(before,c))-winPct(povCp(after,c))); // engine truth: accuracy and training
     const loss=isBest?0:Math.max(0,wb-wa);
     // "Best" = the engine's top move or practically as good (within 0.5% win chance): at this depth two
     // near-equal moves swap places all the time, and chess.com's deeper analysis counts both as best.
     let cls=(isBest||loss<0.5)?'best':loss<2?'excellent':loss<5?'good':loss<10?'inaccuracy':loss<20?'mistake':'blunder';
     const info={};
     // how much worse the second-best move would have been (only when the engine reported one)
-    const gap=(before.c2!=null||before.m2!=null)?wb-winPct(povCp({c:before.c2,m:before.m2},c)):null;
+    const gap=(before.c2!=null||before.m2!=null)?wb-winPct(povCp({c:before.c2,m:before.m2},c)*sc):null;
     // 1) theory: still inside a known opening line
     if(inBook){
       if(i<40&&inBookPos(g.fens[i+1])){
@@ -548,9 +554,9 @@ function review(g){
       const mm=before.m!=null?(c==='w'?before.m:-before.m):0;
       if(mm>0)tags.push({k:'missedmate',san:t&&t.san});
     }
-    acc[c].push(Math.max(0,Math.min(100,103.1668*Math.exp(-0.04354*loss)-3.1669)));
+    acc[c].push(Math.max(0,Math.min(100,103.1668*Math.exp(-0.04354*raw)-3.1669)));
     // san/uci/fen are kept so lists, insights and training never need the slow full parse of the game
-    moves.push({loss,cls,bestSan,tags,info,mover:c,i,san:m.san,uci:uci(m),fen:loss>=10?g.fens[i]:undefined});
+    moves.push({loss,raw,cls,bestSan,tags,info,mover:c,i,san:m.san,uci:uci(m),fen:(raw>=10||loss>=10)?g.fens[i]:undefined});
   }
   const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
   return {v:REV_V,moves,acc:{w:avg(acc.w),b:avg(acc.b)},win:g.p.map(p=>winPct(cpOf(p)))};
@@ -684,7 +690,8 @@ function reviewView(){
   CLASSES.forEach(c=>{
     h+=`<tr class="${my[c]||op[c]?'':'zero'}"><td class="c-${c}">${ICON[c]} ${LABEL[c]}</td><td class="n c-${c}">${my[c]}</td><td class="n">${op[c]}</td></tr>`;
   });
-  h+=`</table></div><div class="mute hint" style="margin-top:8px">Analysed by Stockfish 18 at depth ${g.depth||'?'}. Theory moves come from a database of ${BOOK?BOOK.set.size.toLocaleString():'thousands of'} known opening positions.</div></div>`;
+  h+=`</table></div><div class="mute hint" style="margin-top:8px">Analysed by Stockfish 18 at depth ${g.depth||'?'}. Theory moves come from a database of ${BOOK?BOOK.set.size.toLocaleString():'thousands of'} known opening positions.
+    Labels are adjusted for rating, like chess.com${(g.myc==='w'?g.white.rating:g.black.rating)?`: at your rating (${g.myc==='w'?g.white.rating:g.black.rating}) an evaluation swing counts ${Math.round(leniency(g.myc==='w'?g.white.rating:g.black.rating)*100)}%`:''}. Accuracy uses the raw engine numbers.</div></div>`;
   h+=`<div class="card"><h3>Evaluation</h3>${graph(g)}</div><div class="card"><h3>Moves</h3><div class="moves">`;
   for(let i=0;i<g.moves.length;i+=2){
     h+=`<div class="n">${i/2+1}.</div>`;
@@ -742,7 +749,7 @@ function buildPuzzles(){
   S.games.forEach(g=>{
     if(!g.rev)return;
     g.rev.moves.forEach(m=>{
-      if(m.mover!==g.myc||m.loss<10)return;
+      if(m.mover!==g.myc||(m.raw??m.loss)<10)return; // training uses the engine's real numbers: every real slip is worth learning
       const before=g.p[m.i];if(!before.b)return;
       if(winPct(povCp(before,m.mover))<15)return;
       if(!m.fen)return;
