@@ -16,7 +16,7 @@ Pick the site, enter your username, load your games, and let Stockfish show you 
 - **Vision trainer**: 30-second rounds to find named squares on an empty board and to tell light squares from dark ones; counts towards your streak.
 - **Scout an opponent**: type a chess.com username and see which openings they play with each colour and how well they score, from their last two months (read straight from chess.com, nothing is stored).
 - **Works offline**: the page, engine, opening book and your saved games and reviews are kept on the device, so reviews and training work without a connection.
-- **Settings**: board colours, piece sets, sound; export your reviewed games as an annotated PGN (evals, clocks, !/? symbols) or a single game from its review; quick-switch between recently used profiles.
+- **Settings**: dark or light theme, board colours, piece sets, sound; export your reviewed games as an annotated PGN (evals, clocks, !/? symbols) or a single game from its review; quick-switch between recently used profiles.
 - **Sunday summary** (optional, with reminders on): one notification with your week's games, record and accuracy against the week before.
 - **Play Stockfish**: a full game against the engine at Beginner (1350) to Maximum strength, as White, Black or random, with take-back, resign, PGN download and a one-tap analysis of the final position.
 - **Daily puzzle**: today's puzzle from chess.com (and random ones), with hint and answer; counts for your streak.

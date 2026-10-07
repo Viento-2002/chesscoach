@@ -23,6 +23,8 @@ header h1{font-size:20px;margin:0 12px 0 0}
 input,select,button,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 11px;min-height:38px}
 input,select,textarea{font-size:16px} /* 16px stops iOS zooming into fields */
 :root{color-scheme:dark}
+:root[data-theme=light]{color-scheme:light;--bg:#f3f1ed;--panel:#ffffff;--panel2:#ebe8e2;--text:#262421;--mute:#6b6862;--line:#d8d4cc}
+:root[data-theme=light] .exline:hover{background:#ddd9d0}
 a{color:#8fc65a}
 select{-webkit-appearance:none;appearance:none;background:var(--panel2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%239a9792' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 11px center;padding-right:30px}
 textarea{width:100%;min-height:110px;font:13px/1.4 ui-monospace,Consolas,monospace}
@@ -173,7 +175,7 @@ const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:
 
 const S={user:'',games:[],stored:[],byUrl:new Map(),meta:{synced:[]},train:{},tab:'games',sel:null,cur:0,flip:false,
   expl:[],explColor:'white',depth:14,busy:false,stop:false,prog:null,tr:null,showImport:false,pgnDraft:'',impMsg:'',
-  prefs:{board:'green',pieces:'cburnett',sound:false},recent:[]};
+  prefs:{board:'green',pieces:'cburnett',sound:false,theme:'dark'},recent:[]};
 // looks: board colours, piece set, sound (kept on this device)
 const BOARDS={green:['#eeeed2','#769656','Green'],brown:['#f0d9b5','#b58863','Brown'],blue:['#dee3e6','#8ca2ad','Blue'],purple:['#efefef','#8877b7','Purple'],grey:['#e5e5e5','#8a8a8a','Grey']};
 const PIECE_SETS=[['cburnett','Classic'],['merida','Merida'],['alpha','Alpha'],['cardinal','Cardinal'],['staunty','Staunty'],['pixel','Pixel']];
@@ -181,6 +183,8 @@ try{Object.assign(S.prefs,JSON.parse(ls.get('cc:prefs')||'{}'))}catch(e){}
 try{S.recent=JSON.parse(ls.get('cc:recent')||'[]').filter(k=>typeof k==='string').slice(0,6)}catch(e){}
 function applyPrefs(){
   const b=BOARDS[S.prefs.board]||BOARDS.green;
+  const light=S.prefs.theme==='light';document.documentElement.setAttribute('data-theme',light?'light':'dark');
+  const mt=document.querySelector('meta[name=theme-color]');if(mt)mt.content=light?'#f3f1ed':'#262421';
   document.documentElement.style.setProperty('--light',b[0]);document.documentElement.style.setProperty('--dark',b[1]);
 }
 applyPrefs();
@@ -2334,6 +2338,7 @@ function settingsView(){
   const boards=Object.entries(BOARDS).map(([k,[l,d,name]])=>`<button class="chip ${P.board===k?'on':''}" data-a="setboard" data-k="${k}" style="display:inline-flex;align-items:center;gap:8px">${mini(l,d)}${name}</button>`).join('');
   const sets=PIECE_SETS.map(([k,name])=>`<button class="chip ${P.pieces===k?'on':''}" data-a="setpieces" data-k="${k}" style="display:inline-flex;align-items:center;gap:4px"><img src="${pieceUrl(k,'w','N')}" width="28" height="28" alt=""><img src="${pieceUrl(k,'b','Q')}" width="28" height="28" alt="">${name}</button>`).join('');
   return `<div class="card"><h3>Looks</h3>
+      <div class="mute hint">Theme</div><div class="chips"><button class="chip ${P.theme!=='light'?'on':''}" data-a="settheme" data-k="dark">🌙 Dark</button><button class="chip ${P.theme==='light'?'on':''}" data-a="settheme" data-k="light">☀️ Light</button></div>
       <div class="mute hint">Board colours</div><div class="chips">${boards}</div>
       <div class="mute hint" style="margin-top:10px">Pieces</div><div class="chips">${sets}</div>
       <div class="mute hint" style="margin-top:10px">Sound (move, right and wrong answers in the drills and puzzles)</div>
@@ -2389,6 +2394,7 @@ function downloadText(name,text){
 Object.assign(actions,{
   setboard:d=>{S.prefs.board=d.k;savePrefs();applyPrefs();render()},
   setpieces:d=>{S.prefs.pieces=d.k;savePrefs();_pieceP=null;render()},
+  settheme:d=>{S.prefs.theme=d.k;savePrefs();applyPrefs();render()},
   togglesound:()=>{S.prefs.sound=!S.prefs.sound;savePrefs();snd('good');render()},
   exportall:()=>{
     const list=S.games.filter(g=>g.rev);if(!list.length)return;
