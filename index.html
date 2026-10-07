@@ -16,6 +16,7 @@ header h1{font-size:20px;margin:0 12px 0 0}
 input,select,button,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 11px;min-height:38px}
 input,select,textarea{font-size:16px} /* 16px stops iOS zooming into fields */
 :root{color-scheme:dark}
+a{color:#8fc65a}
 select{-webkit-appearance:none;appearance:none;background:var(--panel2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%239a9792' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 11px center;padding-right:30px}
 textarea{width:100%;min-height:110px;font:13px/1.4 ui-monospace,Consolas,monospace}
 button{cursor:pointer}button:hover{background:#3b3935}
@@ -128,6 +129,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
   <button data-tab="games" class="on">Games</button>
   <button data-tab="train">Train</button>
   <button data-tab="goal">Goal</button>
+  <button data-tab="progress">Progress</button>
   <button data-tab="openings">Openings</button>
   <button data-tab="insights">Insights</button>
 </nav>
@@ -254,7 +256,7 @@ async function loadUser(name,sync,manual){
   name=name.trim();if(!name)return;
   S.user=name;S.games=[];S.stored=[];S.byUrl=new Map();S.meta={synced:[]};S.train={};S.sel=null;S.tr=null;
   S.server=false;S.srv=null;S.serverWhy='';S.showLocal=false;S.checked=0;clearTimeout(pollTimer);
-  S.stats=null;S.ot=null;S.trainMode='mistakes';S.goalTc=null;
+  S.stats=null;S.ot=null;S.trainMode='mistakes';S.goalTc=null;S.log=[];S.weekOff=0;
   try{S.goal=JSON.parse(ls.get('cc:goal:'+name.toLowerCase())||'null')}catch(e){S.goal=null}
   const pending=[];
   ls.set('cc:user',name);ls.set('cc:months',$('#months').value);$('#user').value=name;
@@ -264,6 +266,7 @@ async function loadUser(name,sync,manual){
     (games||[]).forEach(raw=>ingest(raw,false));S.stored=games||[];
     S.games.forEach(g=>{if(pm[g.url]&&!attach(g,pm[g.url]))pending.push([g,pm[g.url]])});
     S.train=tm||{};
+    S.log=(await DB.get(K('log')))||[];
   }catch(e){}
   sortGames();
   setStatus(S.games.length?`${S.games.length} saved games`:'');
@@ -718,7 +721,7 @@ function render(){
   });
   const v=$('#view');
   if(!S.user){v.innerHTML=welcomeView();return}
-  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='openings'?openingsView():insightsView();
+  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='progress'?progressView():S.tab==='openings'?openingsView():insightsView();
 }
 const dateStr=t=>t?new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'}):'–';
 
@@ -928,6 +931,7 @@ function resetPuzzle(){Object.assign(S.tr,{state:'ask',sel:null,targets:[],last:
 function curPuzzle(){return buildPuzzles().find(x=>x.key===S.tr.queue[S.tr.idx])}
 function updateProgress(p,success){
   const t=S.tr;if(t.counted)return;t.counted=true;t.n++;if(success)t.right++;
+  logTrain('puzzle',success);
   const pr=S.train[p.key]||{box:0,due:0,seen:0,ok:0};
   pr.seen++;
   if(success){pr.ok++;pr.box=Math.min(5,pr.box+1);pr.due=Date.now()+DAYS[pr.box]*864e5}
@@ -1130,7 +1134,7 @@ addEventListener('unhandledrejection',ev=>showErr('unexpected error',ev.reason))
 /* ======================================================================
    Analytics, rating goal and opening drills
    ====================================================================== */
-Object.assign(S,{trainMode:'mistakes',ot:null,goal:null,stats:null,goalTc:null,insTc:null,drSel:{label:'London System',variation:'',color:'white'}});
+Object.assign(S,{weekOff:0,log:[],trainMode:'mistakes',ot:null,goal:null,stats:null,goalTc:null,insTc:null,drSel:{label:'London System',variation:'',color:'white'}});
 const pct=(a,b)=>b?Math.round(a/b*100):0;
 const avgOf=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 const median=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2};
@@ -1376,7 +1380,13 @@ function theoryMoves(fen,set){
   for(const m of c.moves({verbose:true})){c.move(m);if(set.has(posHash(c.fen())))out.push({san:m.san,from:m.from,to:m.to});c.undo()}
   return out;
 }
+function logTrain(kind,ok){ // every first attempt is logged with its time: this feeds the weekly summary and the streak
+  S.log.push({t:Date.now(),k:kind,ok:ok?1:0});
+  if(S.log.length>3000)S.log=S.log.slice(-3000);
+  save(K('log'),S.log);
+}
 function cardUpdate(key,success){
+  logTrain('drill',success);
   const pr=S.train[key]||{box:0,due:0,seen:0,ok:0};pr.seen++;
   if(success){pr.ok++;pr.box=Math.min(5,pr.box+1);pr.due=Date.now()+DAYS[pr.box]*864e5}else{pr.box=0;pr.due=Date.now()+10*60e3}
   S.train[key]=pr;save(K('t',key),pr);
@@ -1484,6 +1494,161 @@ Object.assign(actions,{
   dreveal:()=>{const o=S.ot;if(!o.counted){o.counted=true;o.n++;cardUpdate(`op|${o.key}|${posKey(o.chess.fen())}`,false)}o.state='reveal';o.last=null;render()},
   dnext:()=>{const o=S.ot,m=o.theory[0];o.chess.move(m.san);o.last=[m.from,m.to];drillName(o);
     if(o.n>=14)drillEnd(o);else drillAdvance();render()},
+});
+
+/* ======================================================================
+   Weekly progress: this week against last week, highlights, mistake types, training, focus
+   ====================================================================== */
+const CAT=[
+  ['hang',/unprotected|where it can be captured/,'Leaving pieces undefended or moving them into attack','Before each move, check that the piece you move, and every piece you leave behind, is protected.'],
+  ['threat',/already under attack/,'Not dealing with your opponent’s threats','After every opponent move ask: what does it attack? Deal with that threat first.'],
+  ['trade',/Bad trade/,'Bad trades','Count material before a trade: do not give a bigger piece for a smaller one.'],
+  ['fork',/forks|check and attacks/,'Allowing forks and double attacks','Before you move, ask which two of your pieces a knight, pawn or queen could attack at once.'],
+  ['mate',/forced checkmate/,'Missing or allowing checkmates','Check every check, capture and threat, for both sides, before you move.'],
+  ['free',/missed a free|chance to win a pawn|would have forked/,'Missing free material and tactics','Scan for undefended enemy pieces and for forks of your own before you move.'],
+  ['pawn',/winning a pawn/,'Dropping pawns','Count attackers and defenders on loose pawns.'],
+  ['open',/queen out early|same piece twice|still in the centre|starting squares|shelter/,'Opening and king-safety principles','Develop knights and bishops, castle early, and keep the queen at home in the opening.'],
+  ['swing',/winning advantage|balanced position|already difficult/,'Letting good positions slip','When you are better, slow down and look at your opponent’s best reply before every move.'],
+  ['pos',/./,'Positional slips','Improve your worst-placed piece and avoid pointless retreats.']
+];
+const catOf=t=>CAT.find(c=>c[1].test(t));
+function weekStartOf(ts){const d=new Date(ts*1000);d.setHours(0,0,0,0);d.setDate(d.getDate()-((d.getDay()+6)%7));return d.getTime()/1000}
+function addDays(ts,n){const d=new Date(ts*1000);d.setDate(d.getDate()+n);return d.getTime()/1000}
+const dayKey=ms=>{const d=new Date(ms);return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate()};
+const WEEKDAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+function weekData(ws,elapsed){ // elapsed: only count this many seconds of the week (to compare a running week fairly)
+  const A=analytics(),we=elapsed!=null?Math.min(addDays(ws,7),ws+elapsed):addDays(ws,7),gs=A.chron.filter(g=>g.time>=ws&&g.time<we);
+  const w={ws,we,gs,n:gs.length,W:0,D:0,L:0,an:0,acc:null,bad100:null,cats:{},moves:0,bad:0,brill:0,great:0,tcs:{},best:null,top:null,streak:0,open:{},timeLow:0,timeGames:0,tr:{n:0,ok:0,days:new Set()}};
+  const accs=[];let cw=0;
+  for(const g of gs){
+    w[g.res]++;cw=g.res==='W'?cw+1:0;w.streak=Math.max(w.streak,cw);
+    if(g.tc!=='import'&&g.myR){const t=w.tcs[g.tc]=w.tcs[g.tc]||{first:g,last:0,n:0};t.n++;t.last=g.myR}
+    if(g.res==='W'&&g.oppR&&(!w.best||g.oppR>w.best.oppR))w.best=g;
+    (w.open[g.fam]=w.open[g.fam]||{W:0,D:0,L:0})[g.res]++;
+    const clk=clocksOf(g),tp=tcParts(g);
+    if(clk&&tp){w.timeGames++;const thr=lowClock(tp);for(let i=g.myc==='w'?0:1;i<clk.length;i+=2)if(clk[i]<thr){w.timeLow++;break}}
+    if(!g.rev)continue;
+    w.an++;accs.push({g,a:g.rev.acc[g.myc]});
+    for(const m of g.rev.moves){
+      if(m.mover!==g.myc)continue;
+      w.moves++;if(m.cls==='brilliant')w.brill++;if(m.cls==='great')w.great++;
+      if(m.cls==='miss'||m.cls==='mistake'||m.cls==='blunder'){
+        w.bad++;const why=m.info&&m.info.why&&m.info.why[0],c=why&&catOf(why);
+        if(c)w.cats[c[0]]=(w.cats[c[0]]||0)+1;
+      }
+    }
+  }
+  if(accs.length){w.acc=avgOf(accs.map(x=>x.a));w.top=accs.reduce((b,x)=>x.a>b.a?x:b)}
+  if(w.moves)w.bad100=w.bad/w.moves*100;
+  for(const [tc,t] of Object.entries(w.tcs)){ // rating change = last rating this week minus the rating before the first game
+    let base=null;for(const p of A.tc[tc].pts){if(p.t<ws)base=p.r;else break}
+    t.base=base!=null?base:t.first.myR;t.delta=t.last-t.base;
+  }
+  for(const e of S.log)if(e.t>=ws*1000&&e.t<we*1000){w.tr.n++;w.tr.ok+=e.ok;w.tr.days.add(dayKey(e.t))}
+  return w;
+}
+function trainStreak(){
+  const days=new Set(S.log.map(e=>dayKey(e.t)));let n=0,d=new Date();
+  if(!days.has(dayKey(d.getTime())))d.setDate(d.getDate()-1); // today does not break the streak yet
+  while(days.has(dayKey(d.getTime()))){n++;d.setDate(d.getDate()-1)}
+  return n;
+}
+const mainTc=w=>Object.entries(w.tcs).sort((a,b)=>b[1].n-a[1].n)[0];
+function dl(cur,prev,lowerBetter,unit,dec){ // "▲ +2.1 vs 78.0" with a colour for better / worse
+  if(cur==null||prev==null)return '';
+  const d=cur-prev,good=lowerBetter?d<0:d>0;
+  if(Math.abs(d)<(dec?0.05:0.5))return `<span class="mute hint">same as ${dec?prev.toFixed(dec):Math.round(prev)}${unit||''} before</span>`;
+  return `<span class="hint" style="color:${good?'var(--best)':'var(--blun)'}">${d>0?'▲':'▼'} ${d>0?'+':''}${dec?d.toFixed(dec):Math.round(d)}${unit||''}</span> <span class="mute hint">vs ${dec?prev.toFixed(dec):Math.round(prev)}${unit||''}</span>`;
+}
+const fmtDay=ts=>new Date(ts*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'});
+function weekHeadline(w,p){
+  if(!w.n)return 'No games this week.';
+  let s=`You played <b>${w.n}</b> game${w.n===1?'':'s'} (${w.W}W ${w.D}D ${w.L}L, ${pct(w.W,w.n)}% wins)`;
+  const mt=mainTc(w);
+  if(mt&&mt[1].delta)s+=`, and your ${mt[0]} rating ${mt[1].delta>0?'rose':'fell'} by <b>${Math.abs(mt[1].delta)}</b> to ${mt[1].last}`;
+  s+='.';
+  if(w.acc!=null)s+=` Accuracy was <b>${w.acc.toFixed(0)}%</b>${p.acc!=null?`, ${w.acc>=p.acc?'up':'down'} ${Math.abs(w.acc-p.acc).toFixed(1)} points on the week before`:''}.`;
+  if(w.bad100!=null)s+=` You made <b>${w.bad100.toFixed(1)}</b> serious mistakes per 100 moves${p.bad100!=null?` (${p.bad100.toFixed(1)} before): ${w.bad100<p.bad100-0.3?'real progress':w.bad100>p.bad100+0.3?'worth watching':'steady'}`:''}.`;
+  return s;
+}
+function weekText(w,p,label){
+  const mt=mainTc(w),lines=[`ChessCoach: ${label}`,`Games: ${w.n} (${w.W}W ${w.D}D ${w.L}L)`];
+  if(mt)lines.push(`${mt[0]} rating: ${mt[1].delta>=0?'+':''}${mt[1].delta} (now ${mt[1].last})`);
+  if(w.acc!=null)lines.push(`Accuracy: ${w.acc.toFixed(0)}%${p.acc!=null?` (${w.acc>=p.acc?'+':''}${(w.acc-p.acc).toFixed(1)} vs previous week)`:''}`);
+  if(w.bad100!=null)lines.push(`Serious mistakes per 100 moves: ${w.bad100.toFixed(1)}`);
+  const top=Object.entries(w.cats).sort((a,b)=>b[1]-a[1])[0];if(top)lines.push(`Biggest weakness: ${CAT.find(c=>c[0]===top[0])[2]}`);
+  if(w.tr.n)lines.push(`Training: ${w.tr.n} puzzles, ${pct(w.tr.ok,w.tr.n)}% first try, ${w.tr.days.size} days`);
+  return lines.join('\n');
+}
+function progressView(){
+  if(!S.games.length)return '<div class="card mute">Load some games first.</div>';
+  const A=analytics(),cur=weekStartOf(Date.now()/1000),first=weekStartOf(A.chron[0].time);
+  const maxBack=Math.round((cur-first)/(7*86400));
+  S.weekOff=Math.max(-maxBack,Math.min(0,S.weekOff));
+  const ws=addDays(cur,7*S.weekOff),w=weekData(ws),running=S.weekOff===0;
+  const p=weekData(addDays(ws,-7),running?Date.now()/1000-ws:null); // a running week is compared with the same days of last week
+  const label=S.weekOff===0?'This week (so far)':S.weekOff===-1?'Last week':`${fmtDay(ws)} – ${fmtDay(addDays(ws,6))}`;
+  let h=`<div class="card"><div class="ctl" style="margin:0;flex-wrap:nowrap"><button style="flex:0 0 52px;font-size:20px" data-a="wknav" data-d="-1" ${S.weekOff<=-maxBack?'disabled':''}>‹</button>
+    <div style="flex:1;text-align:center"><b>${label}</b><div class="mute hint">${fmtDay(ws)} – ${fmtDay(addDays(ws,6))}</div></div>
+    <button style="flex:0 0 52px;font-size:20px" data-a="wknav" data-d="1" ${S.weekOff>=0?'disabled':''}>›</button></div>
+    <p style="margin:12px 0 0;line-height:1.6">${weekHeadline(w,p)}</p>
+    ${running?'<div class="mute hint" style="margin-top:6px">Compared with the same days of last week.</div>':''}
+    <div class="pz-actions"><button data-a="wkcopy">Copy summary</button></div></div>`;
+  if(!w.n)return h+`<div class="card mute">No games in this week. Use ‹ to look at earlier weeks.</div>`;
+  // the numbers
+  h+=`<div class="cards">
+    <div class="stat"><div class="mute">Games</div><div class="v">${w.n}</div>${dl(w.n,p.n,false)}</div>
+    <div class="stat"><div class="mute">Win rate</div><div class="v">${pct(w.W,w.n)}%</div>${p.n?dl(pct(w.W,w.n),pct(p.W,p.n),false,'%'):''}</div>
+    <div class="stat"><div class="mute">Accuracy</div><div class="v">${w.acc!=null?w.acc.toFixed(0)+'%':'–'}</div>${w.acc!=null?dl(w.acc,p.acc,false,'%',1):`<div class="mute hint">${w.an} of ${w.n} analysed</div>`}</div>
+    <div class="stat"><div class="mute">Mistakes / 100 moves</div><div class="v">${w.bad100!=null?w.bad100.toFixed(1):'–'}</div>${w.bad100!=null?dl(w.bad100,p.bad100,true,'',1):''}</div>
+    ${Object.entries(w.tcs).sort((a,b)=>b[1].n-a[1].n).map(([tc,t])=>`<div class="stat"><div class="mute">${tc} rating</div><div class="v" style="color:${t.delta>0?'var(--best)':t.delta<0?'var(--blun)':'inherit'}">${t.delta>0?'+':''}${t.delta}</div><div class="mute hint">now ${t.last} · ${t.n} games</div></div>`).join('')}</div>`;
+  // highlights
+  const hi=[];
+  if(w.best)hi.push(`Best win: you beat <b>${esc(w.best.opp)}</b> (${w.best.oppR}) — <a href="#" data-a="open" data-i="${S.games.indexOf(w.best)}">open game</a>.`);
+  if(w.top)hi.push(`Most accurate game: <b>${w.top.a.toFixed(0)}%</b> against ${esc(w.top.g.opp)} — <a href="#" data-a="open" data-i="${S.games.indexOf(w.top.g)}">open game</a>.`);
+  if(w.brill||w.great)hi.push(`${w.brill?`<b>${w.brill}</b> brilliant`:''}${w.brill&&w.great?' and ':''}${w.great?`<b>${w.great}</b> great`:''} move${w.brill+w.great===1?'':'s'}.`);
+  if(w.streak>=3)hi.push(`A winning streak of <b>${w.streak}</b> games.`);
+  if(hi.length)h+=`<div class="card"><h3>Highlights</h3><ul class="plan" style="padding-left:20px;margin:0">${hi.map(x=>`<li>${x}</li>`).join('')}</ul></div>`;
+  // what went wrong
+  const cats=Object.entries(w.cats).sort((a,b)=>b[1]-a[1]).slice(0,4),mx=Math.max(1,...cats.map(c=>c[1]));
+  if(cats.length){
+    const topCat=CAT.find(c=>c[0]===cats[0][0]);
+    h+=`<div class="card"><h3>What went wrong this week</h3><div class="mute hint" style="margin-bottom:6px">The main reason behind your serious mistakes (misses, mistakes, blunders).</div>
+      ${cats.map(([k,n])=>{const c=CAT.find(x=>x[0]===k),pv=p.cats[k]||0;return brow(c[2],valBar(n,mx,'var(--mist)'),`${n}`,pv?`${pv} the week before`:'')}).join('')}
+      <div class="coach" style="margin:10px 0 0"><b>Tip:</b> ${topCat[3]}</div></div>`;
+  }
+  // openings + time
+  const ops=Object.entries(w.open).map(([f,o])=>({f,o,n:o.W+o.D+o.L})).sort((a,b)=>b.n-a.n).slice(0,3);
+  h+=`<div class="cols2"><div class="card"><h3>Openings this week</h3>${ops.map(x=>brow(esc(x.f),wdlBar(x.o),`${scoreOf(x.o).toFixed(0)}%`,`${x.n} game${x.n===1?'':'s'}`)).join('')}</div>`;
+  h+=`<div class="card"><h3>Training this week</h3>
+    <div class="cards" style="margin:0 0 8px"><div class="stat"><div class="mute">Puzzles</div><div class="v">${w.tr.n}</div><div class="mute hint">${w.tr.n?pct(w.tr.ok,w.tr.n)+'% right first time':'none yet'}</div></div>
+    <div class="stat"><div class="mute">Streak</div><div class="v">${trainStreak()}</div><div class="mute hint">day${trainStreak()===1?'':'s'} in a row</div></div></div>
+    <div style="display:flex;gap:6px">${WEEKDAYS.map((d,i)=>{const day=addDays(ws,i),on=w.tr.days.has(dayKey(day*1000));return `<div style="flex:1;text-align:center;font-size:12px;color:var(--mute)"><div style="height:22px;border-radius:6px;background:${on?'var(--accent)':'var(--panel2)'}"></div>${d}</div>`}).join('')}</div></div></div>`;
+  // focus for next week
+  const focus=[];
+  if(cats.length)focus.push(`${CAT.find(c=>c[0]===cats[0][0])[3]}`);
+  const worst=Object.entries(w.open).map(([f,o])=>({f,o,n:o.W+o.D+o.L})).filter(x=>x.n>=2&&scoreOf(x.o)<50).sort((a,b)=>scoreOf(a.o)-scoreOf(b.o))[0];
+  if(worst){const lab=labelOf(worst.f);focus.push(`Your <b>${esc(worst.f)}</b> scored ${scoreOf(worst.o).toFixed(0)}% this week.${lab?` <a href="#" data-a="drillFor" data-l="${esc(lab)}">Drill the ${esc(lab)} →</a>`:' Look at those games again.'}`)}
+  if(w.timeGames>=3&&w.timeLow/w.timeGames>=.3)focus.push(`You were short of time in <b>${w.timeLow}</b> of ${w.timeGames} games: spend less time in the opening so you have more for the middlegame.`);
+  const due=buildPuzzles().filter(isDue).length;
+  if(!w.tr.n)focus.push('You have not trained this week. Ten minutes a day of your own mistakes works better than a long session once a week.');
+  if(due)focus.push(`<b>${due}</b> puzzles from your own games are due: <a href="#" data-a="tabto" data-t="train" data-m="mistakes">train now</a>.`);
+  if(S.weekOff===0||focus.length)h+=`<div class="card"><h3>Focus for ${S.weekOff===0?'the rest of this week and next':'the following week'}</h3><ul class="plan" style="padding-left:20px;margin:0">${focus.map(x=>`<li>${x}</li>`).join('')||'<li>Keep going: nothing stands out.</li>'}</ul></div>`;
+  // the last 8 weeks
+  const rows=[];for(let k=0;k<8&&-k>=-maxBack;k++){const wk=weekData(addDays(cur,-7*k));rows.push({k,wk})}
+  const accPts=rows.slice().reverse().filter(r=>r.wk.acc!=null).map((r,i)=>({t:i,r:r.wk.acc}));
+  h+=`<div class="card"><h3>The last ${rows.length} weeks</h3>${accPts.length>=2?`<div class="mute hint" style="margin-bottom:4px">Accuracy per week</div>${lineChart(accPts,{h:90,unit:'%'})}`:''}
+    <div class="tw"><table style="margin-top:8px"><tr><th>Week</th><th>Games</th><th>Wins</th><th>Acc.</th><th>Mist./100</th><th>Rating</th></tr>
+    ${rows.map(({k,wk})=>{const mt=mainTc(wk);return `<tr class="click" data-a="wkgo" data-o="${-k}"><td>${k===0?'This week':fmtDay(wk.ws)}</td><td>${wk.n}</td><td>${wk.n?pct(wk.W,wk.n)+'%':'–'}</td><td>${wk.acc!=null?wk.acc.toFixed(0)+'%':'–'}</td><td>${wk.bad100!=null?wk.bad100.toFixed(1):'–'}</td><td>${mt?(mt[1].delta>0?'+':'')+mt[1].delta+' <span class="mute hint">'+mt[0]+'</span>':'–'}</td></tr>`}).join('')}</table></div></div>`;
+  return h;
+}
+Object.assign(actions,{
+  wknav:d=>{S.weekOff+= +d.d;render();scrollTo(0,0)},
+  wkgo:d=>{S.weekOff=+d.o;render();scrollTo(0,0)},
+  wkcopy:()=>{
+    const cur=weekStartOf(Date.now()/1000),ws=addDays(cur,7*S.weekOff),txt=weekText(weekData(ws),weekData(addDays(ws,-7)),`${fmtDay(ws)} – ${fmtDay(addDays(ws,6))}`);
+    (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>setStatus('Summary copied'),()=>{prompt('Copy your summary:',txt)});
+  },
 });
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
