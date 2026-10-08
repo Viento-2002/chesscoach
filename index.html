@@ -899,11 +899,10 @@ function gameRating(g,color){
   let r=ACC_RATING[ACC_RATING.length-1][1];
   if(a<=ACC_RATING[0][0])r=ACC_RATING[0][1];
   else for(let i=1;i<ACC_RATING.length;i++){const [a1,r1]=ACC_RATING[i-1],[a2,r2]=ACC_RATING[i];if(a<=a2){r=r1+(r2-r1)*(a-a1)/(a2-a1);break}}
-  // A single game never says you are a different player: anchor to the real rating and let the game move it by at most 350
-  // (half the gap), less in a short game.
+  // A single game never says you are a different player: anchor to the real rating and let the game move it by at most 250
+  // (40% of the gap), less in a short game: believable, never 1000 points off.
   const real=(color==='w'?g.white:g.black).rating,w=Math.min(1,plies/60);
-  if(real)r=real+Math.max(-350,Math.min(350,(r-real)*.5))*w;
-  if(color===g.myc){const peak=Math.max(0,...S.games.map(x=>x.myR||0));if(peak)r=Math.min(r,peak+50)} // you never play above your best rating
+  if(real)r=real+Math.max(-250,Math.min(250,(r-real)*.4))*w;
   return Math.max(100,Math.round(r/50)*50);
 }
 function reviewView(){
