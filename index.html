@@ -151,6 +151,7 @@ body.shared header,body.shared nav{display:none}
   <button data-tab="progress">Progress</button>
   <button data-tab="openings">Openings</button>
   <button data-tab="insights">Insights</button>
+  <button data-tab="story">📖 Story</button>
   <button data-tab="scout">🕵 Scout</button>
   <button data-tab="settings">⚙ Settings</button>
 </nav>
@@ -836,7 +837,7 @@ function render(){
   });
   const v=$('#view');
   if(!S.user){v.innerHTML=welcomeView();renderRecent();return}
-  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='progress'?progressView():S.tab==='openings'?openingsView():S.tab==='scout'?scoutView():S.tab==='settings'?settingsView():insightsView();
+  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='progress'?progressView():S.tab==='openings'?openingsView():S.tab==='story'?storyView():S.tab==='scout'?scoutView():S.tab==='settings'?settingsView():insightsView();
   renderRecent();
 }
 const dateStr=t=>t?new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'}):'–';
@@ -2949,6 +2950,157 @@ Object.assign(actions,{
 });
 document.addEventListener('input',e=>{if(e.target.id==='mbOpp'&&S.mb)S.mb.opp=e.target.value});
 document.addEventListener('change',e=>{if(e.target.id==='mbRes'&&S.mb){S.mb.result=e.target.value;S.impMsg='';render()}});
+
+/* ======================================================================
+   Your chess story: the legend you play like, your best and worst moments, and a poster to share
+   ====================================================================== */
+const LEGENDS={
+  tal:{name:'Mikhail Tal',title:'The Magician',icon:'🎩',col:'#c0392b',blurb:'You go for complications and sharp tactics, and the board is rarely quiet when you are around.'},
+  carlsen:{name:'Magnus Carlsen',title:'The Grinder',icon:'⚙️',col:'#2e86c1',blurb:'You keep pressing, outlast opponents in long games and win positions others would have given up on.'},
+  kasparov:{name:'Garry Kasparov',title:'The Beast',icon:'🦁',col:'#d35400',blurb:'You attack with energy and finish games quickly, before your opponent has found their feet.'},
+  polgar:{name:'Judit Polgar',title:'The Tactician',icon:'♟️',col:'#8e44ad',blurb:'You spot the tactical shot, and you hit it cleanly.'},
+  fischer:{name:'Bobby Fischer',title:'The Perfectionist',icon:'🎯',col:'#16a085',blurb:'You play precise, accurate chess and rarely hand out a free move.'},
+  capablanca:{name:'José Raúl Capablanca',title:'The Endgame Machine',icon:'🤖',col:'#7f8c8d',blurb:'The longer the game goes, the better you get. Simple positions are where you win.'},
+  nakamura:{name:'Hikaru Nakamura',title:'The Speed Demon',icon:'⚡',col:'#f1c40f',blurb:'You play fast and you play a lot. Bullet and blitz are home.'},
+  petrosian:{name:'Tigran Petrosian',title:'The Iron Wall',icon:'🧱',col:'#5d6d7e',blurb:'You are hard to beat: solid, patient, and you hold positions that look worse.'},
+};
+const clamp01=v=>Math.max(0,Math.min(1,v)),norm=(v,a,b)=>clamp01((v-a)/(b-a));
+function storyData(){
+  const gs=S.games.filter(g=>g.res&&g.sans);
+  const n=gs.length,out={n,gs};
+  if(!n)return out;
+  const an=gs.filter(g=>g.rev);
+  const W=gs.filter(g=>g.res==='W'),L=gs.filter(g=>g.res==='L'),D=gs.filter(g=>g.res==='D');
+  const mine=g=>x=>g.myc==='w'?x:100-x;
+  const long=g=>g.sans.length>=80,short=g=>g.sans.length<=50;
+  const quick=gs.filter(g=>/bullet|blitz/.test(g.tc)).length/n;
+  const accAvg=an.length?an.reduce((s,g)=>s+g.rev.acc[g.myc],0)/an.length:null;
+  let great=0,brill=0,blund=0,mvs=0,comebacks=0;
+  an.forEach(g=>{
+    g.rev.moves.forEach(m=>{if(m.mover!==g.myc)return;mvs++;if(m.cls==='great')great++;if(m.cls==='brilliant')brill++;if(m.cls==='blunder')blund++});
+    if(g.res==='W'&&Math.min(...g.rev.win.map(mine(g)))<30)comebacks++;
+  });
+  const aN=an.length||1;
+  const st={n,wins:W.length,draws:D.length,losses:L.length,winRate:W.length/n,drawRate:D.length/n,quick,acc:accAvg,
+    longShare:gs.filter(long).length/n,shortWinShare:W.length?W.filter(short).length/W.length:0,longWinShare:W.length?W.filter(long).length/W.length:0,
+    tactics:(great+brill*3)/aN,blunders:mvs?blund/mvs*100:null,comebackShare:an.length?comebacks/aN:0};
+  out.stats=st;
+  const sc={
+    tal:.5*norm(st.tactics,0,4)+.3*st.shortWinShare+.2*(1-st.longShare),
+    carlsen:.5*norm(st.comebackShare,0,.25)+.3*st.longShare+.2*st.winRate,
+    kasparov:.5*st.shortWinShare+.3*st.winRate+.2*norm(st.winRate,.4,.8),
+    polgar:.5*norm(st.tactics,0,3)+.5*(accAvg==null?.4:norm(accAvg,50,90)),
+    fischer:.7*(accAvg==null?.3:norm(accAvg,50,92))+.3*(st.blunders==null?.5:1-norm(st.blunders,0,5)),
+    capablanca:.4*st.longShare+.4*st.longWinShare+.2*(accAvg==null?.4:norm(accAvg,50,90)),
+    nakamura:.8*quick+.2*st.winRate,
+    petrosian:.4*norm(st.drawRate,0,.2)+.3*(st.blunders==null?.5:1-norm(st.blunders,0,5))+.3*(1-st.shortWinShare),
+  };
+  out.scores=sc;out.legend=Object.entries(sc).sort((a,b)=>b[1]-a[1])[0][0];
+  // why: the numbers behind the match
+  const why=[];
+  const pc=v=>Math.round(v*100)+'%';
+  switch(out.legend){
+    case 'tal':why.push(`${(great+brill)} great or brilliant moves in ${an.length} analysed games`,`${pc(st.shortWinShare)} of your wins end within 25 moves`);break;
+    case 'carlsen':why.push(`${pc(st.longShare)} of your games last 40+ moves`,comebacks?`${comebacks} win${comebacks===1?'':'s'} from a clearly worse position`:'you stay in games others would drop');break;
+    case 'kasparov':why.push(`${pc(st.shortWinShare)} of your wins end within 25 moves`,`you win ${pc(st.winRate)} of your games`);break;
+    case 'polgar':why.push(accAvg!=null?`${accAvg.toFixed(0)}% average accuracy`:'sharp tactical play',`${great} great move${great===1?'':'s'} found`);break;
+    case 'fischer':why.push(accAvg!=null?`${accAvg.toFixed(0)}% average accuracy`:'clean play',st.blunders!=null?`only ${st.blunders.toFixed(1)} blunders per 100 moves`:'few blunders');break;
+    case 'capablanca':why.push(`${pc(st.longWinShare)} of your wins come in games of 40+ moves`,`${pc(st.longShare)} of your games go the distance`);break;
+    case 'nakamura':why.push(`${pc(quick)} of your games are bullet or blitz`,`${n} games analysed in your history`);break;
+    case 'petrosian':why.push(`${pc(st.drawRate)} of your games are drawn`,st.blunders!=null?`only ${st.blunders.toFixed(1)} blunders per 100 moves`:'a solid, patient game');break;
+  }
+  out.why=why;
+  // moments
+  let best=null;
+  an.filter(g=>g.res==='W').forEach(g=>{const w=g.rev.win.map(mine(g)),m=Math.min(...w);if(m<40&&(!best||m<best.pct))best={g,pct:m,k:w.indexOf(m)}});
+  out.comeback=best;
+  const gk=W.filter(g=>g.oppR&&g.myR&&g.oppR-g.myR>=30).sort((a,b)=>(b.oppR-b.myR)-(a.oppR-a.myR))[0];
+  out.giant=gk||null;
+  const by={};gs.forEach(g=>{const k=String(g.opp).toLowerCase();(by[k]=by[k]||{name:g.opp,w:0,d:0,l:0,n:0,rating:g.oppR});by[k][g.res==='W'?'w':g.res==='D'?'d':'l']++;by[k].n++});
+  out.nemesis=Object.values(by).filter(o=>o.l>=2).sort((a,b)=>b.l-a.l||b.n-a.n)[0]||null;
+  let exp=null;
+  an.forEach(g=>g.rev.moves.forEach(m=>{if(m.mover===g.myc&&m.raw>=15&&(!exp||m.raw>exp.loss))exp={g,m,i:m.i,loss:m.raw}}));
+  out.expensive=exp;
+  // longest winning streak
+  let run=0,bestRun=0;[...gs].sort((a,b)=>a.time-b.time).forEach(g=>{if(g.res==='W'){run++;bestRun=Math.max(bestRun,run)}else run=0});
+  out.streak=bestRun;
+  return out;
+}
+function storyView(){
+  const d=storyData();
+  if(d.n<5)return '<div class="card"><h3>📖 Your chess story</h3><p class="mute" style="margin:0">Load at least 5 games and your story will appear here: the legend you play like, your best comeback, your giant-killer win, your nemesis and your most expensive move.</p></div>';
+  const L=LEGENDS[d.legend],st=d.stats,gi=g=>S.games.indexOf(g);
+  const open=(g,k,label='Open the game')=>`<div class="pz-actions"><button data-a="open" data-i="${gi(g)}" data-k="${k}">${label}</button></div>`;
+  let h=`<div class="card" style="border-color:${L.col}"><div class="mute hint">The legend you play like</div>
+    <div style="display:flex;gap:14px;align-items:center;margin:8px 0"><div style="font-size:54px;line-height:1">${L.icon}</div>
+    <div><div style="font-size:24px;font-weight:700">${esc(L.name)}</div><div style="color:${L.col};font-weight:700;letter-spacing:.5px">${esc(L.title.toUpperCase())}</div></div></div>
+    <p style="margin:6px 0">${esc(L.blurb)}</p><ul style="margin:6px 0 0;padding-left:20px" class="mute">${d.why.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+    <div class="pz-actions"><button class="primary" data-a="poster">🖼 Make my poster</button></div></div>`;
+  h+=`<div class="cards"><div class="stat"><div class="mute">Games</div><div class="v">${st.n}</div></div><div class="stat"><div class="mute">Win rate</div><div class="v">${Math.round(st.winRate*100)}%</div></div>
+    <div class="stat"><div class="mute">Accuracy</div><div class="v">${st.acc!=null?st.acc.toFixed(0)+'%':'–'}</div></div><div class="stat"><div class="mute">Best win streak</div><div class="v">${d.streak}</div></div></div>`;
+  if(d.comeback){const c=d.comeback;h+=`<div class="card"><div class="mute hint">🔥 Your greatest comeback</div><h3 style="margin:4px 0">You were down to ${Math.round(c.pct)}% and still won</h3>
+    <div class="mute">vs ${esc(c.g.opp)}${c.g.oppR?` (${c.g.oppR})`:''} · ${dateStr(c.g.time)} · the low point was move ${Math.ceil(c.k/2)}</div>${open(c.g,c.k,'See the turning point')}</div>`}
+  if(d.giant){const g=d.giant;h+=`<div class="card"><div class="mute hint">🗡 Your giant-killer moment</div><h3 style="margin:4px 0">You beat ${esc(g.opp)} (${g.oppR}), ${g.oppR-g.myR} points above you</h3>
+    <div class="mute">${dateStr(g.time)} · ${esc(g.tc)} · ${esc(g.opening)}</div>${open(g,0)}</div>`}
+  if(d.nemesis){const o=d.nemesis;h+=`<div class="card"><div class="mute hint">😈 Your nemesis</div><h3 style="margin:4px 0">${esc(o.name)}${o.rating?` (${o.rating})`:''}</h3>
+    <div class="mute">${o.n} games: ${o.w} won, ${o.d} drawn, <b style="color:var(--blun)">${o.l} lost</b></div></div>`}
+  if(d.expensive){const e=d.expensive,g=e.g,m=e.m,flip=g.myc==='b';
+    const arrows=[{...parseUci(g.p[e.i].b||m.uci),color:'#81b64c'},{...parseUci(m.uci),color:'#ca3431'}];
+    h+=`<div class="card"><div class="mute hint">💸 Your most expensive move</div><h3 style="margin:4px 0">${esc(m.san)} cost you ${Math.round(e.loss)}% win chance</h3>
+      <div class="mute" style="margin-bottom:8px">vs ${esc(g.opp)} · move ${Math.floor(e.i/2)+1}${m.bestSan?` · better was <b class="c-best">${esc(m.bestSan)}</b>`:''}</div>
+      <div class="boardwrap">${boardHTML(m.fen||g.fens[e.i],flip,null,arrows,{})}</div>${open(g,e.i+1,'Replay what went wrong')}</div>`}
+  if(!d.comeback&&!d.giant&&!d.nemesis&&!d.expensive)h+='<div class="card mute">More moments will appear as more of your games are analysed.</div>';
+  return h;
+}
+/* ---- the poster ---- */
+async function renderPoster(d){
+  const W=1080,H=1500,cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  const x=cv.getContext('2d'),F='system-ui,Segoe UI,Roboto,sans-serif',L=LEGENDS[d.legend],st=d.stats;
+  const fit=(t,max,font)=>{x.font=font;let s=String(t);while(s.length>4&&x.measureText(s).width>max)s=s.slice(0,-2);return s!==String(t)?s.trimEnd()+'…':s};
+  const g1=x.createLinearGradient(0,0,0,H);g1.addColorStop(0,'#1d1c19');g1.addColorStop(1,'#10100e');x.fillStyle=g1;x.fillRect(0,0,W,H);
+  x.fillStyle=L.col;x.fillRect(0,0,W,14);
+  x.textBaseline='middle';x.textAlign='left';
+  x.fillStyle='#e8e6e3';x.font=`700 40px ${F}`;x.fillText('♞ ChessCoach',60,70);
+  x.textAlign='right';x.fillStyle='#9a9792';x.font=`28px ${F}`;x.fillText(plainName(S.user),W-60,70);x.textAlign='left';
+  x.fillStyle='#9a9792';x.font=`600 26px ${F}`;x.fillText('MY CHESS STORY',60,150);
+  x.font=`150px ${F}`;x.fillText(L.icon,60,300);
+  x.fillStyle='#e8e6e3';x.font=`700 54px ${F}`;x.fillText(fit('I play like '+L.name,W-120,`700 54px ${F}`),60,430);
+  x.fillStyle=L.col;x.font=`700 40px ${F}`;x.fillText(L.title.toUpperCase(),60,490);
+  x.fillStyle='#c8c6c2';x.font=`30px ${F}`;
+  // wrap the blurb
+  const words=L.blurb.split(' ');let line='',y=550;
+  for(const w of words){const t=line?line+' '+w:w;if(x.measureText(t).width>W-120){x.fillText(line,60,y);y+=42;line=w}else line=t}
+  x.fillText(line,60,y);
+  // moments grid
+  const cards=[];
+  if(d.comeback)cards.push(['🔥 GREATEST COMEBACK',`Down to ${Math.round(d.comeback.pct)}%, still won`,`vs ${d.comeback.g.opp}`]);
+  if(d.giant)cards.push(['🗡 GIANT-KILLER',`Beat ${d.giant.opp}`,`rated ${d.giant.oppR}, ${d.giant.oppR-d.giant.myR} above me`]);
+  if(d.nemesis)cards.push(['😈 NEMESIS',d.nemesis.name,`${d.nemesis.l} losses in ${d.nemesis.n} games`]);
+  if(d.expensive)cards.push(['💸 MOST EXPENSIVE MOVE',`${d.expensive.m.san} cost ${Math.round(d.expensive.loss)}%`,`vs ${d.expensive.g.opp}, move ${Math.floor(d.expensive.i/2)+1}`]);
+  const gx=60,gy=720,cw=450,ch=230,gap=30;
+  cards.slice(0,4).forEach((c,i)=>{
+    const cx=gx+(i%2)*(cw+gap),cy=gy+Math.floor(i/2)*(ch+gap);
+    x.fillStyle='#262421';x.beginPath();x.roundRect?x.roundRect(cx,cy,cw,ch,22):x.rect(cx,cy,cw,ch);x.fill();
+    x.fillStyle='#9a9792';x.font=`600 22px ${F}`;x.fillText(c[0],cx+28,cy+44);
+    x.fillStyle='#e8e6e3';x.font=`700 34px ${F}`;x.fillText(fit(c[1],cw-56,`700 34px ${F}`),cx+28,cy+112);
+    x.fillStyle='#9a9792';x.font=`26px ${F}`;x.fillText(fit(c[2],cw-56,`26px ${F}`),cx+28,cy+166);
+  });
+  // numbers
+  const ny=1260,nums=[[st.n,'games'],[Math.round(st.winRate*100)+'%','win rate'],[st.acc!=null?st.acc.toFixed(0)+'%':'–','accuracy'],[d.streak,'best streak']];
+  nums.forEach((n,i)=>{const cx=60+i*255;x.fillStyle='#e8e6e3';x.font=`700 60px ${F}`;x.fillText(String(n[0]),cx,ny);x.fillStyle='#9a9792';x.font=`26px ${F}`;x.fillText(n[1],cx,ny+52)});
+  x.fillStyle='#6b6964';x.font=`24px ${F}`;x.textAlign='center';x.fillText('Made with ChessCoach · chess.vrhconsultancy.nl',W/2,H-40);
+  return new Promise(res=>cv.toBlob(res,'image/png'));
+}
+async function sharePoster(){
+  const d=storyData();toast('Making your poster…');
+  let blob=null;try{blob=await renderPoster(d)}catch(e){console.error(e)}
+  if(!blob){toast('Could not create the poster');return}
+  const file=new File([blob],'my-chess-story.png',{type:'image/png'}),text=`I play like ${LEGENDS[d.legend].name}, ${LEGENDS[d.legend].title}. My chess story on ChessCoach.`;
+  try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'My chess story',text});return}}catch(e){if(e&&e.name==='AbortError')return}
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='my-chess-story.png';document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),5000);toast('Poster saved');
+}
+Object.assign(actions,{poster:()=>sharePoster()});
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
