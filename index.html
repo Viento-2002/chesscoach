@@ -859,15 +859,16 @@ function gamesView(){
     <button class="primary" data-a="importPgn">Add games</button></div>
     ${S.impMsg?`<div class="coach ${/^[1-9]\d* game/.test(S.impMsg)&&!/skipped|could not/.test(S.impMsg)?'ok':'bad'}">${esc(S.impMsg)}</div>`:''}`;
   h+='</div>';
-  h+=`<div class="card tw"><table><tr><th>Date</th><th>Opponent</th><th></th><th>Opening</th><th class="hm">Type</th><th>Acc.</th><th class="hm"></th></tr>`;
+  h+=`<div class="card tw"><table><tr><th>Date</th><th>Opponent</th><th></th><th>Opening</th><th class="hm">Type</th><th>Acc.</th><th>Rating</th><th class="hm"></th></tr>`;
   S.games.forEach((g,i)=>{
     h+=`<tr class="click" data-a="open" data-i="${i}"><td>${dateStr(g.time)}</td>
       <td><span class="dot ${g.me}"></span>${esc(g.opp)} <span class="mute hm">(${g.oppR||'?'})</span></td>
       <td><span class="badge ${g.res}">${g.res}</span></td><td>${esc(g.opening)}</td><td class="mute hm">${g.tc}</td>
       <td>${g.rev?g.rev.acc[g.myc].toFixed(0)+'%':'<span class="mute">–</span>'}</td>
+      <td>${g.rev?gameRating(g,g.myc):'<span class="mute">–</span>'}</td>
       <td class="mute hm">${g.rev?'Review ›':'Analyse ›'}</td></tr>`;
   });
-  if(!S.games.length)h+='<tr><td colspan="7" class="mute">No games yet. Press <b>Load games</b>, or add a PGN above.</td></tr>';
+  if(!S.games.length)h+='<tr><td colspan="8" class="mute">No games yet. Press <b>Load games</b>, or add a PGN above.</td></tr>';
   h+=`</table></div><p class="mute hint">Public profile “${esc(plainName(S.user))}” (${srcLabel()}): public games and their analysis are cached on the ChessCoach server${S.server?'':' (server not reachable right now: using this device only)'}. Imported PGNs and training progress stay on this device. <a href="#" data-a="wipe" style="color:var(--mute)">Delete my data</a></p>`;
   return h;
 }
@@ -2255,7 +2256,7 @@ async function shareText(title,text,url){ // the phone's share sheet when there 
 async function shareLink(){
   const g=curG(),gid=gidOf(g.url);if(!gid)return;
   const url=`${location.origin}/s/${encodeURIComponent(shareKey())}/${gid}/${S.cur}`;
-  await shareText(`${g.white.username} vs ${g.black.username}: game review`,g.rev?`Game review: ${Math.round(g.rev.acc[g.myc])}% accuracy, every move labelled.`:'Game review',url);
+  await shareText(`${g.white.username} vs ${g.black.username}: game review`,g.rev?`Game review: ${Math.round(g.rev.acc[g.myc])}% accuracy, game rating ${gameRating(g,g.myc)}, every move labelled.`:'Game review',url);
 }
 
 /* ---- the image card ---- */
@@ -2309,6 +2310,7 @@ async function renderShareImage(g,k){
     x.fillStyle='#9a9792';x.font=`24px ${F}`;x.fillText('Accuracy',60,y0);
     x.fillStyle='#e8e6e3';x.font=`700 76px ${F}`;x.fillText(`${Math.round(g.rev.acc[me])}%`,60,y0+62);
     x.fillStyle='#9a9792';x.font=`28px ${F}`;x.fillText(`opponent ${Math.round(g.rev.acc[op])}%`,60,y0+120);
+    x.fillStyle='#81b64c';x.font=`700 28px ${F}`;x.fillText(`Game rating ${gameRating(g,me)}`,60,y0+160);
     // counts of each label, for the owner of the review
     let cx=330,cy=y0+8;x.font=`600 26px ${F}`;
     for(const c of CLASSES){if(!my[c])continue;
@@ -2329,7 +2331,7 @@ async function shareImage(){
   const g=curG();toast('Preparing the image…');
   let blob=null;try{blob=await renderShareImage(g,S.cur)}catch(e){console.error(e)}
   if(!blob){toast('Could not create the image');return}
-  const text=`${g.white.username} vs ${g.black.username}${g.rev?`: ${Math.round(g.rev.acc[g.myc])}% accuracy`:''}`;
+  const text=`${g.white.username} vs ${g.black.username}${g.rev?`: ${Math.round(g.rev.acc[g.myc])}% accuracy, game rating ${gameRating(g,g.myc)}`:''}`;
   const file=new File([blob],'chesscoach-review.png',{type:'image/png'});
   try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Game review',text});return}}catch(e){if(e&&e.name==='AbortError')return}
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='chesscoach-review.png';document.body.appendChild(a);a.click();a.remove();
