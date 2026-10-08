@@ -903,6 +903,7 @@ function gameRating(g,color){
   // (half the gap), less in a short game.
   const real=(color==='w'?g.white:g.black).rating,w=Math.min(1,plies/60);
   if(real)r=real+Math.max(-350,Math.min(350,(r-real)*.5))*w;
+  if(color===g.myc){const peak=Math.max(0,...S.games.map(x=>x.myR||0));if(peak)r=Math.min(r,peak+50)} // you never play above your best rating
   return Math.max(100,Math.round(r/50)*50);
 }
 function reviewView(){
