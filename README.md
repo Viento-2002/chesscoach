@@ -23,6 +23,7 @@ Pick the site, enter your username, load your games, and let Stockfish show you 
 - **Training calendar**: a 20-week heatmap of the days you trained, under Progress.
 - **Puzzle Rush**: three minutes and three strikes of puzzles from your own mistakes, with a saved best score and a share button.
 - **Chess story + poster**: which of eight legends you play like (with the numbers behind the match), your greatest comeback, giant-killer win, nemesis and most expensive move, and a shareable poster image.
+- **Roadmap**: a step-by-step plan built from the habits behind your own mistakes (the blunder check, hanging pieces, free material, finishing won positions, the first moves), each with a short lesson, practice and an example from your games. A step is only done when your last 10 games show the improvement.
 - **Opening drills**: learn real opening theory move by move (London System, Italian Game, Sicilian, French, Caro-Kann, Queen's Gambit and about 30 more, with variations) with spaced repetition.
 - **Analytics**: results by colour, time control, opponent strength, time of day and weekday; how you win and lose; streaks and tilt; time management from the clocks; accuracy trends; mistake patterns by move number and piece; conversion and resilience.
 - **Openings explorer**: click through the lines you actually play, with your win/draw/loss score.

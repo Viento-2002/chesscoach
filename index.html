@@ -147,6 +147,7 @@ body.shared header,body.shared nav{display:none}
 <nav id="tabs">
   <button data-tab="games" class="on">Games</button>
   <button data-tab="train">Train</button>
+  <button data-tab="plan">🗺 Plan</button>
   <button data-tab="goal">Goal</button>
   <button data-tab="progress">Progress</button>
   <button data-tab="openings">Openings</button>
@@ -837,7 +838,7 @@ function render(){
   });
   const v=$('#view');
   if(!S.user){v.innerHTML=welcomeView();renderRecent();return}
-  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='progress'?progressView():S.tab==='openings'?openingsView():S.tab==='story'?storyView():S.tab==='scout'?scoutView():S.tab==='settings'?settingsView():insightsView();
+  v.innerHTML=S.tab==='games'?(S.sel!=null?reviewView():gamesView()):S.tab==='train'?trainView(pz):S.tab==='goal'?goalView():S.tab==='progress'?progressView():S.tab==='openings'?openingsView():S.tab==='plan'?planView():S.tab==='story'?storyView():S.tab==='scout'?scoutView():S.tab==='settings'?settingsView():insightsView();
   renderRecent();
 }
 const dateStr=t=>t?new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'}):'–';
@@ -3101,6 +3102,106 @@ async function sharePoster(){
   setTimeout(()=>URL.revokeObjectURL(a.href),5000);toast('Poster saved');
 }
 Object.assign(actions,{poster:()=>sharePoster()});
+
+/* ======================================================================
+   Your roadmap: the habits behind your own mistakes, one step at a time, with progress measured in real games
+   ====================================================================== */
+const PLAN_STEPS=[
+  {key:'blunder',stage:1,title:'The blunder check',unit:'serious mistakes per 100 moves',ok:3,fmt:v=>v.toFixed(1),
+    why:'Mistakes and blunders decide most games below master level. One quick check before every move removes many of them.',
+    habit:['What did my opponent\'s last move do? What does it attack or threaten now?','Is every one of my pieces protected, or can it simply be taken?','After I choose a move: does it leave something undefended, or walk into a capture or check?'],practice:'safe'},
+  {key:'hang',stage:1,title:'Stop leaving pieces hanging',unit:'pieces left hanging per game',ok:.3,fmt:v=>v.toFixed(2),
+    why:'A hanging piece is a free gift. Looking at the square your piece lands on, and at what attacks it, fixes this.',
+    habit:['Say it out loud: "my piece lands on X; who attacks X?"','Count attackers and defenders before you capture or move into a crowded square.','If something is attacked, ask: move it, defend it, or counter?'],practice:'safe'},
+  {key:'free',stage:2,title:'Spot free material',unit:'free pieces missed per game',ok:.5,fmt:v=>v.toFixed(2),
+    why:'Your opponents also leave things hanging. Looking for them is the quickest way to win material.',
+    habit:['Start every move by listing the opponent\'s undefended pieces.','Check every capture and every check: do they win something?','Before a quiet move, ask: is there a forcing move I have not looked at?'],practice:'free'},
+  {key:'convert',stage:2,title:'Finish what you start',unit:'games where a winning position slipped away',ok:.1,fmt:v=>Math.round(v*100)+'%',pctUnit:true,
+    why:'You reach winning positions and then let them slip. Winning positions are won with safe, simple moves, not clever ones.',
+    habit:['When you are clearly ahead, trade pieces, not pawns, and keep your king safe.','Before each move ask what the opponent\'s best counter-chance is, and remove it.','Look for the simplest way to win: promote a pawn, trade queens, or deliver mate.'],practice:'mate'},
+  {key:'opening',stage:3,title:'The first moves',unit:'slips in the first 12 moves per game',ok:.4,fmt:v=>v.toFixed(2),
+    why:'Early slips cost you before the game has started. A small repertoire you know well beats a big one you half remember.',
+    habit:['Pick one opening as White and one defence against e4 and d4 as Black, and stick with them.','Develop pieces, castle early, and do not move the same piece twice without a reason.','Use the Opening drills to learn the first 8 moves of your lines.'],practice:'openings'},
+];
+function planRecs(){ // one record per analysed game, newest first
+  return S.games.filter(g=>g.rev&&g.res&&g.p).sort((a,b)=>b.time-a.time).map(g=>{
+    const mine=g.rev.moves.filter(m=>m.mover===g.myc),r={g,moves:mine.length,serious:0,hang:0,free:0,open:0,conv:0,ex:{}};
+    mine.forEach(m=>{
+      if(m.cls==='mistake'||m.cls==='blunder'){r.serious++;if(!r.ex.blunder||m.raw>r.ex.blunder.raw)r.ex.blunder={k:m.i+1,raw:m.raw}}
+      if(m.tags.some(t=>t.k==='hung')){r.hang++;if(!r.ex.hang)r.ex.hang={k:m.i+1}}
+      if(m.tags.some(t=>t.k==='missedcap')){r.free++;if(!r.ex.free)r.ex.free={k:m.i+1}}
+      if(m.i<24&&['inaccuracy','miss','mistake','blunder'].includes(m.cls)){r.open++;if(!r.ex.opening)r.ex.opening={k:m.i+1}}
+    });
+    const w=g.rev.win.map(v=>g.myc==='w'?v:100-v),mx=Math.max(...w);
+    if(mx>=80&&g.res!=='W'){r.conv=1;r.ex.convert={k:w.indexOf(mx)}}
+    return r;
+  });
+}
+function planRate(step,recs){
+  if(!recs.length)return null;
+  const sum=f=>recs.reduce((s,r)=>s+f(r),0);
+  switch(step.key){
+    case 'blunder':return sum(r=>r.serious)/Math.max(1,sum(r=>r.moves))*100;
+    case 'hang':return sum(r=>r.hang)/recs.length;
+    case 'free':return sum(r=>r.free)/recs.length;
+    case 'convert':return sum(r=>r.conv)/recs.length;
+    case 'opening':return sum(r=>r.open)/recs.length;
+  }
+}
+const planKey=()=>'cc:plan:'+String(S.user||'').toLowerCase();
+function planStore(){try{return JSON.parse(ls.get(planKey())||'{}')}catch(e){return {}}}
+function planSave(o){ls.set(planKey(),JSON.stringify(o))}
+function planState(){
+  const recs=planRecs(),store=planStore(),recent=recs.slice(0,10),steps=[];
+  let dirty=false;
+  if(recs.length<8)return {recs,steps:[],need:8-recs.length};
+  for(const st of PLAN_STEPS){
+    const cur=planRate(st,recent);
+    if(!store[st.key]){store[st.key]={base:planRate(st,recs.slice(0,30)),t:Date.now()};dirty=true}
+    const base=store[st.key].base,t=store[st.key].t;
+    const fine=base<=st.ok,goal=Math.max(st.ok,base*.5),since=recs.filter(r=>r.g.time*1000>t).length;
+    const progress=fine?1:base>goal?Math.max(0,Math.min(1,(base-cur)/(base-goal))):1;
+    const done=fine||(progress>=1&&since>=5);
+    steps.push({...st,base,cur,goal,progress,done,fine,since,ex:recs.find(r=>r.ex[st.key])});
+  }
+  if(dirty)planSave(store);
+  const here=steps.find(s=>!s.done);if(here)here.here=true;
+  return {recs,steps};
+}
+function planView(){
+  const P=planState();
+  if(!S.games.length)return '<div class="card mute">Load some games first.</div>';
+  if(P.need)return `<div class="card"><h3>🗺 Your roadmap</h3><p class="mute" style="margin:0">Your plan is built from your own analysed games. ${P.need} more analysed game${P.need===1?'':'s'} and it will appear here: the habits behind your mistakes, one step at a time, with progress measured in the games you actually play.</p></div>`;
+  const done=P.steps.filter(s=>s.done).length;
+  let h=`<div class="card"><h3>🗺 Your roadmap</h3><p class="mute" style="margin:0">Built from your own games, biggest habits first. A step is finished when your <b>last 10 games</b> show the improvement, not when you click a button. ${done} of ${P.steps.length} steps done.</p></div>`;
+  const stageName={1:'Stage 1 · Quick wins',2:'Stage 2 · Habits',3:'Stage 3 · The opening'};
+  for(const stage of [1,2,3]){
+    h+=`<div class="chips" style="margin:14px 0 6px"><span class="chip on">${stageName[stage]}</span></div>`;
+    for(const s of P.steps.filter(x=>x.stage===stage)){
+      const icon=s.done?'✅':s.here?'▶️':'○',pct=Math.round(s.progress*100);
+      h+=`<div class="card" style="${s.here?'border-color:var(--accent)':''}"><div style="display:flex;gap:10px;align-items:center"><div style="font-size:26px">${icon}</div>
+        <div style="flex:1"><div style="font-weight:700;font-size:17px">${esc(s.title)}</div><div class="mute hint">${s.fine?'Not a problem for you ✓':s.done?'Step done':s.here?'You are here':'Next'}</div></div>${s.here?'<span class="chip on">YOU ARE HERE</span>':''}</div>`;
+      if(!s.fine){
+        h+=`<div class="wbar" style="grid-template-columns:1fr 40px;margin:10px 0 2px"><div><i style="width:${pct}%;background:var(--accent)"></i></div><b>${pct}%</b></div>
+          <div class="mute hint">${esc(s.unit)}: <b>${s.fmt(s.base)}</b> when you started → <b style="color:var(--text)">${s.fmt(s.cur)}</b> in your last 10 games · goal ${s.fmt(s.goal)}${s.since?` · proven in ${s.since} game${s.since===1?'':'s'} since`:''}</div>`;
+      }
+      h+=`<details style="margin-top:8px"${s.here?' open':''}><summary class="mute hint" style="cursor:pointer">Lesson</summary>
+        <p style="margin:8px 0 4px">${esc(s.why)}</p><ol style="margin:4px 0 0;padding-left:20px">${s.habit.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>
+        <div class="pz-actions">${s.practice?`<button class="primary" data-a="planpractice" data-p="${s.practice}">Practise this</button>`:''}${s.ex?`<button data-a="open" data-i="${S.games.indexOf(s.ex.g)}" data-k="${s.ex.ex[s.key].k}">See it in your game</button>`:''}</div></details></div>`;
+    }
+  }
+  return h+`<p class="mute hint"><a href="#" data-a="planreset">Restart my plan from today</a> (resets the starting numbers).</p>`;
+}
+Object.assign(actions,{
+  planpractice:d=>{
+    S.tab='train';
+    if(d.p==='openings'){S.trainMode='openings';render();scrollTo(0,0);return}
+    const pz=buildPuzzles().filter(p=>puzzleThemes(p).some(x=>x.k===d.p));
+    if(pz.length){S.trainMode='tactics';actions.tactheme({t:d.p});return}
+    S.trainMode='mistakes';render();scrollTo(0,0);
+  },
+  planreset:()=>{planSave({});render()},
+});
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
