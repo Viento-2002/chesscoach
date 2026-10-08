@@ -339,7 +339,7 @@ async function loadUser(name,sync,manual){
   if(S.games.length){rememberProfile(S.user);renderRecent()}
 }
 // A saved analysis is {depth,p,rev}: the raw engine data plus the finished review of it.
-const REV_V=6;
+const REV_V=7;
 function attach(g,val){ // fast path: the review was saved too, no chess.js work at all
   const p=val&&(Array.isArray(val)?val:val.p),rev=val&&val.rev;
   if(!p||p.length!==g.sans.length+1||!rev||rev.v!==REV_V)return false;
@@ -714,8 +714,22 @@ const pron=(s,mine)=>String(s).replace(/\{(You|you|your|Your)\}/g,(_,w)=>mine?w:
 // winning chances costs a 900 player fewer (the opponent is also likely to miss it). The evaluation is scaled
 // before it becomes a win chance: x0.5 at 600 and below, rising to x1.0 at 2200 and above. Unknown rating: x1.
 const leniency=r=>r?Math.max(0.5,Math.min(1,0.5+(r-600)/1600*0.5)):1;
+// Accuracy like chess.com / lichess: not a plain average but the mean of (a) a harmonic mean, which punishes the bad moves,
+// and (b) a mean weighted by how volatile the position was around each move. A game with many slips scores clearly lower.
+function accuracyMix(wins,per,n){ // wins: win% after every position; per: [{c:'w'|'b',a}] per move, in order
+  const sd=a=>{const m=a.reduce((x,y)=>x+y,0)/a.length;return Math.sqrt(a.reduce((x,y)=>x+(y-m)**2,0)/a.length)};
+  const size=Math.max(2,Math.min(8,Math.floor(n/10))),wt=per.map((_,i)=>{const lo=Math.max(0,i-(size>>1)),hi=Math.min(wins.length,lo+size);return Math.max(.5,Math.min(12,sd(wins.slice(lo,hi))))});
+  const out={};
+  for(const c of ['w','b']){
+    const ix=per.map((p,i)=>p.c===c?i:-1).filter(i=>i>=0);
+    if(!ix.length){out[c]=0;continue}
+    const wm=ix.reduce((t,i)=>t+per[i].a*wt[i],0)/ix.reduce((t,i)=>t+wt[i],0),hm=ix.length/ix.reduce((t,i)=>t+1/Math.max(per[i].a,1),0);
+    out[c]=(wm+hm)/2;
+  }
+  return out;
+}
 function review(g){
-  const moves=[],acc={w:[],b:[]},hist={w:{lastTo:null,castled:false},b:{lastTo:null,castled:false}};
+  const moves=[],per=[],hist={w:{lastTo:null,castled:false},b:{lastTo:null,castled:false}};
   let inBook=true,bookLabel='',prevLoss=0,prevMover=null;
   for(let i=0;i<g.moves.length;i++){
     const m=g.moves[i],c=m.color,before=g.p[i],after=g.p[i+1];
@@ -767,12 +781,12 @@ function review(g){
     }
     if(cls==='inaccuracy'||cls==='miss'||cls==='mistake'||cls==='blunder'){try{info.why=explainMove(g,i,m,{before,after,raw,c,h:hist[c]})}catch(e){}}
     hist[c].lastTo=m.to;if(/[kq]/.test(m.flags))hist[c].castled=true;
-    acc[c].push(Math.max(0,Math.min(100,103.1668*Math.exp(-0.04354*raw)-3.1669)));
+    per.push({c,a:Math.max(0,Math.min(100,103.1668*Math.exp(-0.04354*raw)-3.1669))});
     // san/uci/fen are kept so lists, insights and training never need the slow full parse of the game
     moves.push({loss,raw,cls,bestSan,tags,info,mover:c,i,san:m.san,uci:uci(m),fen:(raw>=10||loss>=10)?g.fens[i]:undefined});
   }
-  const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
-  return {v:REV_V,moves,acc:{w:avg(acc.w),b:avg(acc.b)},win:g.p.map(p=>winPct(cpOf(p)))};
+  const win=g.p.map(p=>winPct(cpOf(p)));
+  return {v:REV_V,moves,acc:accuracyMix(win,per,g.moves.length),win};
 }
 function counts(g,color){
   const o=Object.fromEntries(CLASSES.map(k=>[k,0]));
@@ -879,7 +893,7 @@ function gamesView(){
 }
 
 /* ---- game rating: the rating a player's accuracy in this game corresponds to (an estimate, like chess.com's Game Rating) ---- */
-const ACC_RATING=[[30,300],[50,500],[60,800],[70,1100],[80,1500],[85,1800],[90,2150],[95,2650],[98,3050],[100,3200]];
+const ACC_RATING=[[30,300],[45,450],[55,700],[65,950],[75,1300],[82,1700],[88,2100],[93,2500],[97,2900],[100,3200]];
 function gameRating(g,color){
   const a=g.rev.acc[color],plies=g.moves.filter(m=>m.color===color).length*2;
   let r=ACC_RATING[ACC_RATING.length-1][1];

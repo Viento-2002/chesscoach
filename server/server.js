@@ -504,18 +504,27 @@ function findShared(name, gid) {
 const htmlEsc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // Accuracy of both sides from the stored analysis (same formula as the page, on the raw engine numbers).
 function accuracyOf(game, p) {
+  // same formula as the page: mean of a harmonic mean and a volatility-weighted mean (like chess.com / lichess)
   try {
     const c = new Chess(); if (!c.load_pgn(game.pgn)) return null;
     const moves = c.history({ verbose: true }); if (p.length !== moves.length + 1) return null;
     const cp = e => e.m != null ? (e.m > 0 ? 10000 : -10000) : e.c, win = v => 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * Math.max(-1000, Math.min(1000, v)))) - 1);
-    const acc = { w: [], b: [] };
-    moves.forEach((m, i) => {
+    const per = moves.map((m, i) => {
       const s = m.color === 'w' ? 1 : -1, best = p[i].b && (m.from + m.to + (m.promotion || '')) === p[i].b;
       const loss = best ? 0 : Math.max(0, win(s * cp(p[i])) - win(s * cp(p[i + 1])));
-      acc[m.color].push(Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * loss) - 3.1669)));
+      return { c: m.color, a: Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * loss) - 3.1669)) };
     });
-    const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
-    return { w: avg(acc.w), b: avg(acc.b), plies: moves.length };
+    const wins = p.map(e => win(cp(e)));
+    const sd = a => { const m = a.reduce((x, y) => x + y, 0) / a.length; return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / a.length); };
+    const size = Math.max(2, Math.min(8, Math.floor(moves.length / 10)));
+    const wt = per.map((_, i) => { const lo = Math.max(0, i - (size >> 1)), hi = Math.min(wins.length, lo + size); return Math.max(0.5, Math.min(12, sd(wins.slice(lo, hi)))); });
+    const out = { w: 0, b: 0, plies: moves.length };
+    for (const col of ['w', 'b']) {
+      const ix = per.map((x, i) => x.c === col ? i : -1).filter(i => i >= 0); if (!ix.length) continue;
+      const wm = ix.reduce((t, i) => t + per[i].a * wt[i], 0) / ix.reduce((t, i) => t + wt[i], 0), hm = ix.length / ix.reduce((t, i) => t + 1 / Math.max(per[i].a, 1), 0);
+      out[col] = (wm + hm) / 2;
+    }
+    return out;
   } catch (e) { return null; }
 }
 function sharePage(name, gid, ply, hit, origin) {
