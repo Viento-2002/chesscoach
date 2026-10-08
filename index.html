@@ -872,6 +872,17 @@ function gamesView(){
   return h;
 }
 
+/* ---- game rating: the rating a player's accuracy in this game corresponds to (an estimate, like chess.com's Game Rating) ---- */
+const ACC_RATING=[[30,300],[50,500],[60,800],[70,1100],[80,1500],[85,1800],[90,2150],[95,2650],[98,3050],[100,3200]];
+function gameRating(g,color){
+  const a=g.rev.acc[color],plies=g.moves.filter(m=>m.color===color).length*2;
+  let r=ACC_RATING[ACC_RATING.length-1][1];
+  if(a<=ACC_RATING[0][0])r=ACC_RATING[0][1];
+  else for(let i=1;i<ACC_RATING.length;i++){const [a1,r1]=ACC_RATING[i-1],[a2,r2]=ACC_RATING[i];if(a<=a2){r=r1+(r2-r1)*(a-a1)/(a2-a1);break}}
+  const real=(color==='w'?g.white:g.black).rating,w=Math.min(1,plies/60); // a short game says little: lean on the real rating
+  if(real)r=w*r+(1-w)*real;
+  return Math.max(100,Math.round(r/50)*50);
+}
 function reviewView(){
   const g=curG();loadPieceImgs(); // (the share image needs the piece pictures ready the moment you tap)
   let h=`<div class="ctl">${S.shared?'':'<button data-a="back">‹ All games</button>'}<button data-a="flip">⇅ Flip</button>
@@ -903,7 +914,10 @@ function reviewView(){
   const my=counts(g,g.myc),op=counts(g,g.myc==='w'?'b':'w');
   h+=`<div class="cards">
     <div class="stat"><div class="mute">Your accuracy</div><div class="v">${r.acc[g.myc].toFixed(0)}%</div></div>
-    <div class="stat"><div class="mute">Opponent</div><div class="v">${r.acc[g.myc==='w'?'b':'w'].toFixed(0)}%</div></div></div>`;
+    <div class="stat"><div class="mute">Opponent</div><div class="v">${r.acc[g.myc==='w'?'b':'w'].toFixed(0)}%</div></div>
+    <div class="stat"><div class="mute">Your game rating</div><div class="v" style="color:var(--accent)">${gameRating(g,g.myc)}</div><div class="mute hint">your rating ${(g.myc==='w'?g.white:g.black).rating||'?'}</div></div>
+    <div class="stat"><div class="mute">Opponent</div><div class="v">${gameRating(g,g.myc==='w'?'b':'w')}</div><div class="mute hint">their rating ${(g.myc==='w'?g.black:g.white).rating||'?'}</div></div></div>
+  <div class="mute hint" style="margin:-4px 0 8px">Game rating: the rating that this game's accuracy corresponds to, an estimate like chess.com's.</div>`;
   if(RV)h+=`<div class="card"><div class="ctl" style="margin:0 0 4px"><b style="flex:1">🎬 Replay: ${esc(mv.san)}${SYM[rv.cls]} (${LABEL[rv.cls]})</b><button data-a="rpoff">✕ Close</button></div>${RV.html}</div>`;
   else if(bad)h+=`<div class="ctl"><button class="primary" data-a="rpon">🎬 Replay what went wrong</button></div>`;
   h+=coachBox(g,k);
