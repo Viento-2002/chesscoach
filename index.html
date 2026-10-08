@@ -1041,7 +1041,7 @@ function pzSteps(p,which){
   return out;
 }
 function pzReplay(p,t){
-  const g=p.g,which=t.vw||'yours',own=p.who!=='their';
+  const g=p.g,which=t.vw||'best',own=p.who!=='their';
   const steps=pzSteps(p,which),s=Math.max(0,Math.min(steps.length,t.vs||0)),nxt=steps[s];
   const bar=(label,v,col)=>`<div class="wbar"><span>${label}</span><div><i style="width:${Math.round(v)}%;background:${col}"></i></div><b>${Math.round(v)}%</b></div>`;
   const wb=winPct(povCp(g.p[p.i],p.color)),wa=winPct(povCp(g.p[p.i+1],p.color));
