@@ -899,8 +899,10 @@ function gameRating(g,color){
   let r=ACC_RATING[ACC_RATING.length-1][1];
   if(a<=ACC_RATING[0][0])r=ACC_RATING[0][1];
   else for(let i=1;i<ACC_RATING.length;i++){const [a1,r1]=ACC_RATING[i-1],[a2,r2]=ACC_RATING[i];if(a<=a2){r=r1+(r2-r1)*(a-a1)/(a2-a1);break}}
-  const real=(color==='w'?g.white:g.black).rating,w=Math.min(1,plies/60); // a short game says little: lean on the real rating
-  if(real)r=w*r+(1-w)*real;
+  // A single game never says you are a different player: anchor to the real rating and let the game move it by at most 350
+  // (half the gap), less in a short game.
+  const real=(color==='w'?g.white:g.black).rating,w=Math.min(1,plies/60);
+  if(real)r=real+Math.max(-350,Math.min(350,(r-real)*.5))*w;
   return Math.max(100,Math.round(r/50)*50);
 }
 function reviewView(){
