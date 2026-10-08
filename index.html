@@ -855,7 +855,9 @@ function gamesView(){
     <div class="progress"><i id="pbar" style="width:${S.prog||0}%"></i></div><div id="ptxt" class="mute hint"></div></div>`;
   }
   h+=`<div class="card"><div class="ctl" style="margin:0"><b>Add your own games</b><button data-a="toggleImport" style="margin-left:auto">${S.showImport?'Hide':'Paste / upload PGN'}</button></div>`;
-  if(S.showImport)h+=`<p class="mute hint">Games from chess.com, lichess, over the board… anything in PGN format. Several games in one file is fine.</p>
+  if(S.showImport)h+=`<div class="chips" style="margin:8px 0"><button class="chip ${S.impMode!=='board'?'on':''}" data-a="impmode" data-m="pgn">📋 Paste PGN</button><button class="chip ${S.impMode==='board'?'on':''}" data-a="impmode" data-m="board">♟ Enter moves on a board</button></div>`;
+  if(S.showImport&&S.impMode==='board')h+=mbView();
+  else if(S.showImport)h+=`<p class="mute hint">Games from chess.com, lichess, over the board… anything in PGN format. Several games in one file is fine.</p>
     <textarea id="pgnText" placeholder="Paste PGN here">${esc(S.pgnDraft)}</textarea>
     <div class="ctl"><input type="file" id="pgnFile" accept=".pgn,.txt,text/plain" style="flex:1;min-width:0">
     <label class="mute">I played <select id="pgnSide"><option value="auto">auto-detect by name</option><option value="white">White</option><option value="black">Black</option></select></label>
@@ -1251,6 +1253,7 @@ const actions={
   tquit:()=>{S.tr=null;render()},
   tsq:d=>{
     if(S.ex){exTap(d.sq);return}
+    if(S.tab==='games'&&S.showImport&&S.impMode==='board'&&S.mb){mbTap(d.sq);return}
     if(S.trainMode==='rush'&&S.rs){rushTap(d.sq);return}
     if(S.trainMode==='play'){if(S.pl)plTap(d.sq);else dpTap(d.sq);return}
     if(S.trainMode==='vision'&&S.vis){visTap(d.sq);return}
@@ -2872,6 +2875,65 @@ Object.assign(actions,{
   rpon:()=>{S.rp={g:curG(),k:S.cur,vw:'yours',vs:0};render()},
   rpoff:()=>{S.rp=null;render()},
 });
+/* ======================================================================
+   Add your own game by playing the moves on a board
+   ====================================================================== */
+S.mb=null;S.impMode='pgn';
+const mbNew=side=>({chess:new Chess(),side:side||'white',opp:'',result:'auto',sel:null,targets:[],last:null});
+function mbView(){
+  const m=S.mb||(S.mb=mbNew()),c=m.chess,flip=(m.side==='black')!==!!m.fl;
+  const over=c.in_checkmate()?'Checkmate':c.in_stalemate()?'Stalemate':c.in_draw()?'Draw':'';
+  const moves=c.history();
+  let numbered='';moves.forEach((x,i)=>{numbered+=(i%2===0?(i/2+1)+'. ':'')+x+' '});
+  return `<p class="mute hint">Play the moves of your game on the board, from the first move. Tap a piece, then the square it goes to (pawns promote to a queen).</p>
+    <div class="row"><div><div class="boardwrap">${boardHTML(c.fen(),flip,m.last,null,{click:true,sel:m.sel,targets:m.targets})}</div>
+    <div class="ctl"><button data-a="mbundo" ${moves.length?'':'disabled'}>↶ Undo</button><button data-a="mbreset" ${moves.length?'':'disabled'}>⟲ Clear</button><button data-a="mbflip">⇅ Flip</button></div></div>
+    <div class="side"><div class="mute hint">${moves.length?moves.length+' move'+(moves.length===1?'':'s')+(over?' · '+over:' · '+(c.turn()==='w'?'White':'Black')+' to move'):'No moves yet'}</div>
+    <div class="coach" style="min-height:44px">${numbered?esc(numbered):'<span class="mute">The moves will appear here.</span>'}</div>
+    <div class="mute hint" style="margin-top:8px">I played</div>
+    <div class="chips" style="margin:4px 0"><button class="chip ${m.side==='white'?'on':''}" data-a="mbside" data-s="white">White</button><button class="chip ${m.side==='black'?'on':''}" data-a="mbside" data-s="black">Black</button></div>
+    <div class="ctl"><input id="mbOpp" placeholder="Opponent's name (optional)" value="${esc(m.opp)}" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1 1 100%"></div>
+    <div class="ctl"><label class="mute" style="flex:1 1 100%">Result <select id="mbRes" style="width:100%;margin-top:4px"><option value="auto" ${m.result==='auto'?'selected':''}>${over==='Checkmate'||over==='Stalemate'||over==='Draw'?'Automatic ('+over+')':'Choose the result…'}</option><option value="won" ${m.result==='won'?'selected':''}>I won</option><option value="lost" ${m.result==='lost'?'selected':''}>I lost</option><option value="draw" ${m.result==='draw'?'selected':''}>Draw</option></select></label></div>
+    <div class="pz-actions"><button class="primary" data-a="mbadd" ${moves.length>=2?'':'disabled'}>Add this game</button></div>
+    ${S.impMsg?`<div class="coach ${/^[1-9]d* game/.test(S.impMsg)&&!/skipped|could not/.test(S.impMsg)?'ok':'bad'}">${esc(S.impMsg)}</div>`:''}</div></div>`;
+}
+function mbTap(sq){
+  const m=S.mb,c=m.chess,pc=c.get(sq);
+  if(m.sel&&m.targets.includes(sq)){
+    const mv=c.move({from:m.sel,to:sq,promotion:'q'});m.sel=null;m.targets=[];
+    if(mv){m.last=[mv.from,mv.to];S.impMsg='';snd('move')}
+    render();return;
+  }
+  if(pc&&pc.color===c.turn()){m.sel=sq;m.targets=c.moves({square:sq,verbose:true}).map(x=>x.to)}else{m.sel=null;m.targets=[]}
+  render();
+}
+function mbAdd(){
+  const m=S.mb,c=m.chess;
+  let res=null;
+  if(c.in_checkmate())res=c.turn()==='w'?'0-1':'1-0';
+  else if(c.in_stalemate()||c.in_draw())res='1/2-1/2';
+  else if(m.result==='won')res=m.side==='white'?'1-0':'0-1';
+  else if(m.result==='lost')res=m.side==='white'?'0-1':'1-0';
+  else if(m.result==='draw')res='1/2-1/2';
+  if(!res){S.impMsg='Choose the result of the game first (I won, I lost or draw).';return}
+  const me=plainName(S.user),opp=(m.opp||'').trim()||'Opponent';
+  const g=new Chess();c.history().forEach(x=>g.move(x));
+  g.header('Event','Own game','Site','ChessCoach','Date',new Date().toISOString().slice(0,10).replace(/-/g,'.'),
+    'White',m.side==='white'?me:opp,'Black',m.side==='black'?me:opp,'Result',res);
+  S.impMsg=importPgn(g.pgn(),m.side);
+  if(/^[1-9]d* game/.test(S.impMsg))S.mb=mbNew(m.side);
+}
+Object.assign(actions,{
+  impmode:d=>{S.impMode=d.m;S.impMsg='';render()},
+  mbundo:()=>{const m=S.mb;m.chess.undo();m.last=null;m.sel=null;m.targets=[];render()},
+  mbreset:()=>{S.mb=mbNew(S.mb.side);render()},
+  mbflip:()=>{S.mb.fl=!S.mb.fl;render()},
+  mbside:d=>{S.mb.side=d.s;S.mb.fl=false;render()},
+  mbadd:()=>{mbAdd();render()},
+});
+document.addEventListener('input',e=>{if(e.target.id==='mbOpp'&&S.mb)S.mb.opp=e.target.value});
+document.addEventListener('change',e=>{if(e.target.id==='mbRes'&&S.mb){S.mb.result=e.target.value;S.impMsg='';render()}});
+
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
   loadBook();

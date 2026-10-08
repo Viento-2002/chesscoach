@@ -28,7 +28,7 @@ Pick the site, enter your username, load your games, and let Stockfish show you 
 - **Insights**: your weakest phase of the game, recurring opening mistakes, openings that cost you the most.
 - **Train your mistakes**: puzzles built from your own blunders, with a visual replay after each one, also available for every mistake in a game review (red arrow for what you played, orange for how it is punished, green for the best line, step-through chips and win-chance bars), with spaced repetition (a position you solve returns after 1, 3, 7, 21, 60 days; one you miss returns soon).
 - **Saved in your browser**: enter your username once; games, analysis and training progress are kept locally (IndexedDB), and only new games are fetched next time.
-- **Add your own games**: paste or upload any PGN (chess.com, lichess, over the board).
+- **Add your own games**: paste or upload any PGN (chess.com, lichess, over the board), or play the moves on a board.
 - **Mobile friendly**: tap-to-move puzzles and a layout that fits phones.
 - Games come from the public chess.com and lichess APIs (no login or key needed). A lichess profile is stored as `li.<name>` on the server.
 
