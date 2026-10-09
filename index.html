@@ -2995,7 +2995,7 @@ function animateBoards(){
       const a=b.querySelector('.sq[data-s="'+last[0]+'"]'),z=b.querySelector('.sq[data-s="'+last[1]+'"]'),img=z&&z.querySelector('img');
       if(!a||!img)return;
       const ra=a.getBoundingClientRect(),rz=z.getBoundingClientRect();
-      img.style.transition='none';img.style.position='relative';img.style.zIndex='6';
+      img.style.transition='none';img.style.zIndex='6';
       img.style.transform='translate('+(ra.left-rz.left)+'px,'+(ra.top-rz.top)+'px)';
       requestAnimationFrame(()=>requestAnimationFrame(()=>{
         img.style.transition='transform .22s ease-out';img.style.transform='';
