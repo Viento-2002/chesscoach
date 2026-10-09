@@ -798,12 +798,12 @@ function boardHTML(fen,flip,last,arrows,o){
   o=o||{};
   const rows=fen.split(' ')[0].split('/');
   const grid=rows.map(r=>{const row=[];for(const ch of r){if(/\d/.test(ch))for(let i=0;i<+ch;i++)row.push(null);else row.push(ch)}return row});
-  let h=`<div class="board${o.click?' click':''}">`;
+  let h=`<div class="board${o.click?' click':''}" data-fen="${fen}" data-last="${last?last.join(','):''}">`;
   for(let y=0;y<8;y++)for(let x=0;x<8;x++){
     const r=flip?7-y:y,f=flip?7-x:x;
     const sq='abcdefgh'[f]+(8-r),pc=grid[r][f],light=(r+f)%2===0;
     const mk=o.marks&&o.marks.find(m=>m.sq===sq);
-    h+=`<div class="sq ${light?'l':'d'}${last&&(sq===last[0]||sq===last[1])?' hl':''}${o.sel===sq?' sel':''}${mk?' '+mk.cls:''}"${o.click?` data-a="tsq" data-sq="${sq}"`:''}>`;
+    h+=`<div data-s="${sq}" class="sq ${light?'l':'d'}${last&&(sq===last[0]||sq===last[1])?' hl':''}${o.sel===sq?' sel':''}${mk?' '+mk.cls:''}"${o.click?` data-a="tsq" data-sq="${sq}"`:''}>`;
     if(!o.nocoords){if(x===0)h+=`<b class="r">${8-r}</b>`;if(y===7)h+=`<b class="f">${'abcdefgh'[f]}</b>`}
     if(pc&&!o.blind)h+=`<img src="${PIECE(pc===pc.toUpperCase()?'w':'b',pc)}" alt="">`;
     if(o.badge&&o.badge.sq===sq)h+=badge(o.badge.cls,true);
@@ -1042,12 +1042,14 @@ function mistakeView(pz){
   const reveal=t.state==='right'||t.state==='answer';
   const V=reveal?pzReplay(p,t):null;
   const arrows=reveal?V.arrows:[];
-  const sel=reveal?null:(t.sel||(t.hint?p.best.slice(0,2):null));
+  const PL=pzLine(p),sel=reveal?null:(t.sel||(t.hint?PL[t.step||0].slice(0,2):null));
   h+=`<div class="row"><div>
-    <div class="boardwrap">${reveal?boardHTML(V.fen,flip,V.last,arrows,{}):boardHTML(p.fen,flip,t.last,arrows,{click:t.state==='ask',sel,targets:t.targets})}</div></div>
+    <div class="boardwrap">${reveal?boardHTML(V.fen,flip,V.last,arrows,{}):boardHTML(pzFen(p,t),flip,t.last,arrows,{click:t.state==='ask',sel,targets:t.targets})}</div></div>
     <div class="side"><div class="card">${t.theme?`<div class="chips" style="margin:0 0 4px"><span class="chip on">${TACTICS.find(x=>x.k===t.theme).label}</span></div><div class="mute hint" style="margin-bottom:8px">${TACTICS.find(x=>x.k===t.theme).tip}</div>`:''}<div class="mute hint">Puzzle ${t.idx+1} of ${t.queue.length}${p.n>1?` · you’ve gone wrong here ${p.n} times`:''}</div>
-    <h3 style="margin-top:6px">${p.color==='w'?'White':'Black'} to move: find the best move</h3>
+    <h3 style="margin-top:6px">${PL.length>=3?`<span class="chip on" style="font-size:12px;margin-right:6px">Multi-step · ${(t.step||0)/2+1} of ${Math.ceil(PL.length/2)}</span>`:''}${p.color==='w'?'White':'Black'} to move: find the best move</h3>
     <div class="mute hint">From your game vs ${esc(p.g.opp)} · ${esc(p.g.opening)} · move ${Math.floor(p.i/2)+1}</div>`;
+  if(t.state==='reply')h+='<div class="coach">The opponent replies…</div>';
+  if(t.state==='ask'&&t.msg)h+=`<div class="coach ok">${t.msg}</div>`;
   if(t.state==='ask')h+=`<p class="mute">Tap a piece, then tap where it should go.</p><div class="pz-actions"><button data-a="thint">💡 Hint</button><button data-a="treveal">Show answer</button><button data-a="tskip">Skip</button></div>`;
   if(t.state==='thinking')h+=`<div class="coach">Checking <b>${esc(t.played)}</b> with Stockfish…</div>`;
   if(t.state==='wrong')h+=`<div class="coach bad">${t.msg}</div><div class="pz-actions"><button class="primary" data-a="tretry">Try again</button><button data-a="treveal">Show answer</button></div>`;
@@ -1096,6 +1098,27 @@ function pzReplay(p,t){
     <div class="mute hint" style="margin:2px 0 6px">${own?'Your':'Their'} chance to win the game.</div>`;
   return {fen:s?steps[s-1].fen:p.fen,last:s?[steps[s-1].from,steps[s-1].to]:null,arrows:nxt?[{from:nxt.from,to:nxt.to,color:nxt.col}]:[],html};
 }
+/* ---- multi-step puzzles: a decisive tactic is followed through the engine's line, up to three of your moves ---- */
+function pzLine(p){
+  if(p.loss<20||!p.before.v)return [p.best];
+  const c=new Chess(p.fen),out=[];
+  for(const u of p.before.v.split(' ').slice(0,5)){const m=c.move(parseUci(u));if(!m)break;out.push(u)}
+  if(out[0]!==p.best)return [p.best];
+  if(out.length%2===0)out.pop(); // the line must end on a move of yours
+  return out.length>=3?out:[p.best];
+}
+const pzFen=(p,t)=>t.fen||p.fen;
+function pzAdvance(p,t,c,mv,line,s){
+  t.fen=c.fen();t.last=[mv.from,mv.to];t.hint=false;
+  if(s+2>=line.length){updateProgress(p,true);t.state='right';t.msg=s?'Correct! You found the whole line.':`Correct! <b>${mv.san}</b> is the best move.`;render();return}
+  snd('good');t.state='reply';t.msg='';render();
+  setTimeout(()=>{
+    if(S.tr!==t)return;
+    const c2=new Chess(t.fen),r=c2.move(parseUci(line[s+1]));if(!r)return;
+    t.fen=c2.fen();t.last=[r.from,r.to];t.step=s+2;t.state='ask';
+    t.msg=`Good! They reply <b>${r.san}</b>. Step ${s/2+2} of ${Math.ceil(line.length/2)}: find the next move.`;render();
+  },700);
+}
 function trainStart(all,theme){
   let pz=buildPuzzles();
   if(theme)pz=pz.filter(p=>puzzleThemes(p).some(x=>x.k===theme));
@@ -1105,7 +1128,7 @@ function trainStart(all,theme){
   if(!list.length)return;
   S.tr={queue:list.map(p=>p.key),idx:0,n:0,right:0,retried:new Set(),theme:theme||null};resetPuzzle();
 }
-function resetPuzzle(){Object.assign(S.tr,{vw:null,vs:0,state:'ask',sel:null,targets:[],last:null,hint:false,counted:false,played:'',msg:''})}
+function resetPuzzle(){Object.assign(S.tr,{fen:null,step:0,vw:null,vs:0,state:'ask',sel:null,targets:[],last:null,hint:false,counted:false,played:'',msg:''})}
 function curPuzzle(){return buildPuzzles().find(x=>x.key===S.tr.queue[S.tr.idx])}
 function updateProgress(p,success){
   const t=S.tr;if(t.counted)return;t.counted=true;t.n++;if(success)t.right++;
@@ -1119,10 +1142,16 @@ function updateProgress(p,success){
   S.train[p.key]=pr;save(K('t',p.key),pr);
 }
 async function trainMove(from,to){
-  const t=S.tr,p=curPuzzle(),c=new Chess(p.fen),mv=c.move({from,to,promotion:'q'});
+  const t=S.tr,p=curPuzzle(),c=new Chess(pzFen(p,t)),mv=c.move({from,to,promotion:'q'});
   if(!mv)return;
   const u=from+to+(mv.promotion||'');
   Object.assign(t,{sel:null,targets:[],last:[from,to],played:mv.san});
+  const line=pzLine(p),s=t.step||0;
+  if(s>0){ // a later step of a multi-step puzzle: only the engine's line counts
+    if(u===line[s])return pzAdvance(p,t,c,mv,line,s);
+    updateProgress(p,false);t.state='wrong';t.msg=`<b>${mv.san}</b> isn’t the follow-up. Look for the strongest continuation.`;render();return;
+  }
+  if(u===p.best&&line.length>=3)return pzAdvance(p,t,c,mv,line,0);
   if(u===p.best){updateProgress(p,true);t.state='right';t.msg=`Correct! <b>${mv.san}</b> is the best move.`;render();return}
   const sameMistake=p.playedSan===mv.san;
   if(sameMistake){updateProgress(p,false);t.state='wrong';t.msg=`<b>${mv.san}</b> is the move you played in the game — that was the mistake. Look for something else.`;render();return}
@@ -1276,7 +1305,7 @@ const actions={
     if(S.trainMode==='openings'&&S.ot){drillTap(d.sq);return}
     if(S.trainMode==='endgames'&&S.eg){egTap(d.sq);return}
     const t=S.tr;if(!t||t.state!=='ask')return;
-    const p=curPuzzle(),c=new Chess(p.fen),pc=c.get(d.sq);
+    const p=curPuzzle(),c=new Chess(pzFen(p,t)),pc=c.get(d.sq);
     if(t.sel&&t.targets.includes(d.sq)){trainMove(t.sel,d.sq);return}
     if(pc&&pc.color===p.color){t.sel=d.sq;t.hint=false;t.targets=c.moves({square:d.sq,verbose:true}).map(m=>m.to)}
     else{t.sel=null;t.targets=[]}
@@ -2949,6 +2978,34 @@ Object.assign(actions,{
 });
 document.addEventListener('input',e=>{if(e.target.id==='mbOpp'&&S.mb)S.mb.opp=e.target.value});
 document.addEventListener('change',e=>{if(e.target.id==='mbRes'&&S.mb){S.mb.result=e.target.value;S.impMsg='';render()}});
+
+/* ======================================================================
+   Piece animation: when the position on a board is one move further than before, the piece slides to its square
+   ====================================================================== */
+let _bprev=[];
+function animateBoards(){
+  const reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches,now=[];
+  document.querySelectorAll('.board[data-fen]').forEach((b,i)=>{
+    const fen=b.dataset.fen,last=b.dataset.last?b.dataset.last.split(','):null,prev=_bprev[i];
+    now[i]=fen;
+    if(reduce||!prev||prev===fen||!last)return;
+    try{
+      const c=new Chess(prev),m=c.move({from:last[0],to:last[1],promotion:'q'});
+      if(!m||c.fen().split(' ')[0]!==fen.split(' ')[0])return; // only a real single move gets animated
+      const a=b.querySelector('.sq[data-s="'+last[0]+'"]'),z=b.querySelector('.sq[data-s="'+last[1]+'"]'),img=z&&z.querySelector('img');
+      if(!a||!img)return;
+      const ra=a.getBoundingClientRect(),rz=z.getBoundingClientRect();
+      img.style.transition='none';img.style.position='relative';img.style.zIndex='6';
+      img.style.transform='translate('+(ra.left-rz.left)+'px,'+(ra.top-rz.top)+'px)';
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{
+        img.style.transition='transform .22s ease-out';img.style.transform='';
+        setTimeout(()=>{img.style.transition='';img.style.zIndex=''},300);
+      }));
+    }catch(e){/* never let an animation break the page */}
+  });
+  _bprev=now;
+}
+const _render0=render;render=function(){_render0();animateBoards()};
 
 /* ---------- start: reopen as the last user, no typing needed ---------- */
 (function init(){
